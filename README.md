@@ -1,35 +1,28 @@
-# WorldTrader — Plateforme de simulation multi-actifs mondiale
+# WorldTrader
 
-WorldTrader est un moteur de simulation **modulaire** couvrant:
+Ce dépôt contient maintenant un backend Spring Boot pour l'API de stocks.
 
-- univers multi-actifs (equity, FX, crypto, commodity),
-- microstructure (LOB, price-time FIFO, latence, impact concave, spread dynamique),
-- agents hétérogènes (market maker, CTA, retail),
-- macro/régimes/news,
-- risk engine (marge + liquidations),
-- contagion réseau,
-- calibration “stylized facts” + replay déterministe.
+## Backend API (port 8000)
 
-## Exécution
-
+### Lancer
 ```bash
-python simulate.py --config configs/world_market.yaml --ticks 200 --seed 42 --log-level INFO
+cd backend
+mvn spring-boot:run
 ```
 
-Exports dans `runs/<timestamp>/`:
+### Endpoints
+- `GET /api/v1/stocks`
+- `GET /api/v1/stocks/{ticker}`
+- `GET /api/v1/stocks/price/{ticker}`
+- `GET /api/v1/stocks/prices?tickers=AAPL,MSFT,TSLA`
+- `GET /api/v1/stocks/random`
 
-- `trades.parquet`
-- `orderbook_snapshots.parquet`
-- `metrics.json`
+Swagger/OpenAPI:
+- `/swagger-ui/index.html`
+- `/v3/api-docs`
 
-## Analyse stylized facts
-
+### Tests
 ```bash
-python analyze_run.py runs/<timestamp>
-```
-
-## Tests
-
-```bash
-python -m unittest discover -s tests -v
+cd backend
+mvn test
 ```

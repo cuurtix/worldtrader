@@ -26,6 +26,7 @@ mvn spring-boot:run
 - `GET /api/v1/regime`
 - `PUT /api/v1/regime`
 - `GET /api/v1/metrics/{ticker}`
+- `GET /api/v1/metrics/market` (cancel rate, spread moyen, profondeur, tailles, autocorr retours)
 
 ## Exemple order submit
 ```bash
@@ -57,7 +58,7 @@ mvn test
 
 ## Améliorations realism/perf (microstructure)
 - **Multiple market makers** (pool configuré, quotes/skew/cancel-refresh par MM)
-- **Flux par catégories + Poisson** (`RetailNoiseFlow`, `MomentumFlow`, `MeanReversionFlow`, `NewsShockFlow`)
+- **Flux par catégories + Poisson** (`RetailNoiseFlow`, `MomentumFlow`, `MeanReversionFlow`, `NewsShockFlow`, `ArbFlow`, `LiquidationFlow`)
 - **Tailles d’ordres heavy-tail** (mélange lognormal: petits ordres + blocs)
 - **Cancel/replace massif** dépendant distance au mid + stress
 - **Régime enrichi**: `burstiness`, `maxOrdersPerTick`, `maxCancelsPerTick`

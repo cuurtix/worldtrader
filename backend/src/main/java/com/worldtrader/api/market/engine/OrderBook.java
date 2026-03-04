@@ -7,9 +7,12 @@ import com.worldtrader.api.market.model.Side;
 import java.util.*;
 
 public class OrderBook {
+    private record OrderLocator(Side side, double price, Order ref) {}
+
     private final String ticker;
     private final NavigableMap<Double, PriceLevel> bids = new TreeMap<>(Comparator.reverseOrder());
     private final NavigableMap<Double, PriceLevel> asks = new TreeMap<>();
+    private final Map<String, OrderLocator> orderIndex = new HashMap<>();
 
     public OrderBook(String ticker) { this.ticker = ticker; }
     public String ticker() { return ticker; }
@@ -25,9 +28,28 @@ public class OrderBook {
         var sideMap = o.side() == Side.BUY ? bids : asks;
         var level = sideMap.computeIfAbsent(o.limitPrice(), PriceLevel::new);
         level.add(o);
+        orderIndex.put(o.orderId(), new OrderLocator(o.side(), o.limitPrice(), o));
     }
 
     public boolean cancel(String orderId) {
+        OrderLocator loc = orderIndex.get(orderId);
+        if (loc != null) {
+            NavigableMap<Double, PriceLevel> map = loc.side() == Side.BUY ? bids : asks;
+            PriceLevel level = map.get(loc.price());
+            if (level == null) {
+                orderIndex.remove(orderId);
+                return false;
+            }
+            boolean removed = level.queue().remove(loc.ref());
+            if (removed) {
+                level.reduce(loc.ref().remainingQty());
+                if (level.empty()) map.remove(loc.price());
+                orderIndex.remove(orderId);
+                return true;
+            }
+            orderIndex.remove(orderId);
+            return false;
+        }
         return cancelInMap(orderId, bids) || cancelInMap(orderId, asks);
     }
 
@@ -40,12 +62,17 @@ public class OrderBook {
                 if (o.orderId().equals(orderId)) {
                     level.reduce(o.remainingQty());
                     it.remove();
+                    orderIndex.remove(orderId);
                     if (level.empty()) map.remove(entry.getKey());
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    public void removeIndex(String orderId) {
+        orderIndex.remove(orderId);
     }
 
     public List<Order> restingOrders() {
@@ -58,5 +85,9 @@ public class OrderBook {
     public int depthQty(Side side, int levels) {
         NavigableMap<Double, PriceLevel> map = side == Side.BUY ? bids : asks;
         return map.values().stream().limit(levels).mapToInt(PriceLevel::totalQty).sum();
+    }
+
+    public int totalRestingOrders() {
+        return orderIndex.size();
     }
 }

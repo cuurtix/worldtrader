@@ -31,20 +31,42 @@ public class MarketSimulationService {
     private final List<OrderFlowCategory> flowCategories = new ArrayList<>();
     private final AtomicLong tickCount = new AtomicLong(0);
 
+    private final Map<String, Set<String>> activeOrdersByTrader = new ConcurrentHashMap<>();
+    private final Map<String, String> orderOwner = new ConcurrentHashMap<>();
+
+    private final AtomicLong submittedOrders = new AtomicLong(0);
+    private final AtomicLong cancelRequests = new AtomicLong(0);
+    private final AtomicLong cancelSuccess = new AtomicLong(0);
+    private final AtomicLong totalTrades = new AtomicLong(0);
+
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private ScheduledFuture<?> task;
     private volatile long intervalMillis = 300;
     private volatile boolean running = true;
 
+    private final MarketSimulationProperties properties;
+
+    public MarketSimulationService(MarketSimulationProperties properties) {
+        this.properties = properties;
+    }
+
     @PostConstruct
     void init() {
-        seed();
-        initMarketMakers(8);
-        flowCategories.add(new RetailNoiseFlowCategory());
-        flowCategories.add(new MomentumFlowCategory());
-        flowCategories.add(new MeanReversionFlowCategory());
-        flowCategories.add(new NewsShockFlowCategory());
+        bootstrap();
         task = scheduler.scheduleAtFixedRate(this::tick, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
+    }
+
+    public synchronized void bootstrap() {
+        if (catalog.isEmpty()) {
+            seed();
+            initMarketMakers(properties.getMarketMakers());
+            flowCategories.add(new RetailNoiseFlowCategory());
+            flowCategories.add(new MomentumFlowCategory());
+            flowCategories.add(new MeanReversionFlowCategory());
+            flowCategories.add(new NewsShockFlowCategory());
+            flowCategories.add(new ArbFlowCategory());
+            flowCategories.add(new LiquidationFlowCategory());
+        }
     }
 
     @PreDestroy
@@ -55,14 +77,14 @@ public class MarketSimulationService {
 
     private void initMarketMakers(int n) {
         for (int i = 0; i < n; i++) {
-            double baseSpread = 0.0008 + ThreadLocalRandom.current().nextDouble(0.0, 0.0008);
-            double riskAversion = 0.8 + ThreadLocalRandom.current().nextDouble(0.0, 1.4);
-            double invTarget = ThreadLocalRandom.current().nextDouble(-80.0, 80.0);
-            double cancelRate = 1.0 + ThreadLocalRandom.current().nextDouble(0.0, 2.5);
-            double refreshRate = 0.8 + ThreadLocalRandom.current().nextDouble(0.0, 2.0);
-            int minSize = 10 + ThreadLocalRandom.current().nextInt(0, 20);
-            int maxSize = minSize + 30 + ThreadLocalRandom.current().nextInt(0, 70);
-            MarketMakerAgent.Params p = new MarketMakerAgent.Params(baseSpread, riskAversion, invTarget, cancelRate, refreshRate, minSize, maxSize);
+            double baseSpread = 0.0008 + ThreadLocalRandom.current().nextDouble(0.0, 0.0012);
+            double riskAversion = 0.6 + ThreadLocalRandom.current().nextDouble(0.0, 1.8);
+            double invTarget = ThreadLocalRandom.current().nextDouble(-100.0, 100.0);
+            double cancelRate = 2.0 + ThreadLocalRandom.current().nextDouble(0.0, 5.0);
+            double refreshRate = 1.2 + ThreadLocalRandom.current().nextDouble(0.0, 3.0);
+            int minSize = 10 + ThreadLocalRandom.current().nextInt(0, 40);
+            int maxSize = minSize + 40 + ThreadLocalRandom.current().nextInt(0, 120);
+            MarketMakerAgent.Params p = new MarketMakerAgent.Params(baseSpread, riskAversion, invTarget, cancelRate, refreshRate, properties.getMmLevels(), minSize, maxSize);
             marketMakers.add(new MarketMakerAgent("MM_" + i, p));
         }
     }
@@ -80,29 +102,26 @@ public class MarketSimulationService {
         trades.put(t, new ConcurrentLinkedDeque<>());
         returnsWin.put(t, new ConcurrentLinkedDeque<>());
         tradeWin.put(t, new ConcurrentLinkedDeque<>());
-        submitInternal(new Order(UUID.randomUUID().toString(), "SEED_MM", t, Side.BUY, OrderType.LIMIT, TimeInForce.GTC, 250, px - 0.15, Instant.now()));
-        submitInternal(new Order(UUID.randomUUID().toString(), "SEED_MM", t, Side.SELL, OrderType.LIMIT, TimeInForce.GTC, 250, px + 0.15, Instant.now()));
+        submitInternal(new Order(UUID.randomUUID().toString(), "SEED_MM", t, Side.BUY, OrderType.LIMIT, TimeInForce.GTC, 300, px - 0.15, Instant.now()));
+        submitInternal(new Order(UUID.randomUUID().toString(), "SEED_MM", t, Side.SELL, OrderType.LIMIT, TimeInForce.GTC, 300, px + 0.15, Instant.now()));
     }
 
     public Set<String> tickers() { return catalog.keySet(); }
     public String companyName(String ticker) { return catalog.get(ticker); }
 
     public synchronized void tick() {
+        bootstrap();
         if (!running) return;
         tickCount.incrementAndGet();
         double dt = intervalMillis / 1000.0;
         driftRegime(dt);
 
-        // 1) cancel/replace dynamics
         int cancelBudget = regime.getMaxCancelsPerTick();
         cancelBudget -= runMarketMakerCancels(dt, cancelBudget);
         cancelBudget -= runFlowCancels(dt, cancelBudget);
 
-        // 2) create fresh MM quotes
         int orderBudget = regime.getMaxOrdersPerTick();
         orderBudget -= runMarketMakerQuotes(orderBudget);
-
-        // 3) bursty flow categories with Poisson arrivals
         orderBudget -= runFlowCategories(dt, orderBudget);
     }
 
@@ -159,7 +178,7 @@ public class MarketSimulationService {
         int canceled = 0;
         for (MarketMakerAgent mm : marketMakers) {
             int draws = PoissonSampler.sample(mm.params().cancelRate() * dt * (1.0 + regime.getPoliticalStress()));
-            canceled += cancelOrdersForTrader(mm.traderId(), draws, budget - canceled, true);
+            canceled += cancelFromActiveSet(mm.traderId(), draws, budget - canceled, true);
             if (canceled >= budget) return canceled;
         }
         return canceled;
@@ -168,23 +187,25 @@ public class MarketSimulationService {
     private int runFlowCancels(double dt, int budget) {
         if (budget <= 0) return 0;
         int draws = PoissonSampler.sample((1.0 + 4.0 * regime.getBurstiness()) * dt);
-        return cancelOrdersForTrader("FLOW_", draws, budget, false);
+        return cancelFromActiveSet("FLOW_", draws, budget, false);
     }
 
-    private int cancelOrdersForTrader(String traderPattern, int draws, int budget, boolean strictPrefix) {
+    private int cancelFromActiveSet(String traderPattern, int draws, int budget, boolean exactTrader) {
         if (draws <= 0 || budget <= 0) return 0;
         int canceled = 0;
-        for (String ticker : tickers()) {
-            OrderBook book = books.get(ticker);
-            List<Order> candidates = book.restingOrders().stream().filter(o -> strictPrefix ? o.traderId().equals(traderPattern) : o.traderId().startsWith(traderPattern)).toList();
-            Collections.shuffle(candidates);
-            Double mid = book.mid();
-            for (Order o : candidates) {
+        for (Map.Entry<String, Set<String>> entry : activeOrdersByTrader.entrySet()) {
+            String trader = entry.getKey();
+            if ((exactTrader && !trader.equals(traderPattern)) || (!exactTrader && !trader.startsWith(traderPattern))) {
+                continue;
+            }
+            List<String> ids = new ArrayList<>(entry.getValue());
+            Collections.shuffle(ids);
+            for (String id : ids) {
                 if (canceled >= budget || canceled >= draws) return canceled;
-                double distance = (mid == null || o.limitPrice() == null) ? 0.0 : Math.abs(o.limitPrice() - mid) / Math.max(mid, 1e-6);
-                double pCancel = Math.min(0.98, 0.2 + 2.0 * distance + 0.5 * regime.getPoliticalStress());
-                if (ThreadLocalRandom.current().nextDouble() < pCancel && book.cancel(o.orderId())) {
+                cancelRequests.incrementAndGet();
+                if (cancelOrder(id)) {
                     canceled++;
+                    cancelSuccess.incrementAndGet();
                 }
             }
         }
@@ -209,10 +230,17 @@ public class MarketSimulationService {
     }
 
     private OrderResponse submitInternal(Order order) {
+        submittedOrders.incrementAndGet();
         OrderBook book = books.get(order.ticker());
         List<Trade> fills = matching.execute(book, order);
         fills.forEach(this::recordTrade);
         for (Trade t : fills) applyPortfolio(t);
+
+        if (order.type() == OrderType.LIMIT && order.tif() == TimeInForce.GTC && order.remainingQty() > 0) {
+            orderOwner.put(order.orderId(), order.traderId());
+            activeOrdersByTrader.computeIfAbsent(order.traderId(), k -> ConcurrentHashMap.newKeySet()).add(order.orderId());
+        }
+
         OrderStatus status = fills.isEmpty() && order.type() == OrderType.MARKET
                 ? OrderStatus.REJECTED
                 : order.remainingQty() == 0
@@ -229,7 +257,15 @@ public class MarketSimulationService {
     }
 
     public synchronized boolean cancelOrder(String orderId) {
-        return books.values().stream().anyMatch(b -> b.cancel(orderId));
+        boolean canceled = books.values().stream().anyMatch(b -> b.cancel(orderId));
+        if (canceled) {
+            String owner = orderOwner.remove(orderId);
+            if (owner != null) {
+                Set<String> set = activeOrdersByTrader.get(owner);
+                if (set != null) set.remove(orderId);
+            }
+        }
+        return canceled;
     }
 
     public OrderBookDto getOrderBook(String rawTicker, int levels) {
@@ -279,6 +315,29 @@ public class MarketSimulationService {
         return new MetricsDto(ticker, b.mid(), b.spread(), db, da, ofi, nofi, li, rv, vwap);
     }
 
+    public MarketMicroStatsDto getMicroStats() {
+        double avgSpread = tickers().stream().map(this::getMetrics).mapToDouble(m -> m.spread() == null ? 0.0 : m.spread()).average().orElse(0.0);
+        double avgDepth = tickers().stream().map(this::getMetrics).mapToDouble(m -> (m.depthBid() + m.depthAsk()) / 2.0).average().orElse(0.0);
+        double avgTradeSize = trades.values().stream().flatMap(Collection::stream).limit(2000).mapToDouble(Trade::qty).average().orElse(0.0);
+        double acf = lag1ReturnAutocorr();
+        long resting = books.values().stream().mapToLong(OrderBook::totalRestingOrders).sum();
+        double ctr = totalTrades.get() == 0 ? 0.0 : (double) cancelSuccess.get() / totalTrades.get();
+        return new MarketMicroStatsDto(tickCount.get(), submittedOrders.get(), cancelRequests.get(), cancelSuccess.get(), totalTrades.get(), ctr, avgSpread, avgDepth, avgTradeSize, acf, resting);
+    }
+
+    private double lag1ReturnAutocorr() {
+        List<Double> rs = returnsWin.values().stream().flatMap(Collection::stream).limit(2000).toList();
+        if (rs.size() < 3) return 0.0;
+        double mean = rs.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+        double num = 0.0;
+        double den = 0.0;
+        for (int i = 1; i < rs.size(); i++) {
+            num += (rs.get(i) - mean) * (rs.get(i - 1) - mean);
+        }
+        for (double r : rs) den += (r - mean) * (r - mean);
+        return den == 0 ? 0.0 : num / den;
+    }
+
     public MarketRegime getRegime() { return regime; }
 
     public void updateRegime(MarketRegime input) {
@@ -302,18 +361,25 @@ public class MarketSimulationService {
     }
 
     private void recordTrade(Trade t) {
+        totalTrades.incrementAndGet();
         Deque<Trade> dq = trades.get(t.ticker());
         dq.addFirst(t);
         while (dq.size() > 1500) dq.pollLast();
+
         Deque<Trade> tw = tradeWin.get(t.ticker());
         tw.addFirst(t);
         while (tw.size() > 300) tw.pollLast();
+
         Deque<Double> rw = returnsWin.get(t.ticker());
         if (dq.size() > 1) {
             double p0 = dq.stream().skip(1).findFirst().map(Trade::price).orElse(t.price());
             if (p0 > 0) rw.addFirst(Math.log(t.price() / p0));
         }
         while (rw.size() > 300) rw.pollLast();
+
+        // cleanup non-resting owners from active map lazily (incoming can be fully filled)
+        orderOwner.remove(t.buyOrderId());
+        orderOwner.remove(t.sellOrderId());
     }
 
     private String normalizeTicker(String t) {

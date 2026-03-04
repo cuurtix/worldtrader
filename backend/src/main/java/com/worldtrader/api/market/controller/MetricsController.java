@@ -1,5 +1,6 @@
 package com.worldtrader.api.market.controller;
 
+import com.worldtrader.api.market.dto.MarketMicroStatsDto;
 import com.worldtrader.api.market.dto.MetricsDto;
 import com.worldtrader.api.market.service.MarketSimulationService;
 import org.springframework.http.ResponseEntity;
@@ -13,4 +14,7 @@ public class MetricsController {
 
     @GetMapping("/{ticker}")
     public ResponseEntity<MetricsDto> get(@PathVariable String ticker) { return ResponseEntity.ok(market.getMetrics(ticker)); }
+
+    @GetMapping("/market")
+    public ResponseEntity<MarketMicroStatsDto> marketStats() { return ResponseEntity.ok(market.getMicroStats()); }
 }

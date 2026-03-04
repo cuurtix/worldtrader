@@ -63,3 +63,10 @@ mvn test
 - **Cancel/replace massif** dépendant distance au mid + stress
 - **Régime enrichi**: `burstiness`, `maxOrdersPerTick`, `maxCancelsPerTick`
 - **Prix toujours émergent du matching** (aucun random-walk sur prix)
+
+
+## Script simulation 10k ticks
+```bash
+python backend/scripts/run_10k_ticks.py
+```
+(Assume l'API Spring Boot déjà lancée sur localhost:8000.)

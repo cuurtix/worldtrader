@@ -8,10 +8,14 @@ import org.springframework.stereotype.Component;
 public class MarketSimulationProperties {
     private int marketMakers = 12;
     private int mmLevels = 5;
+    private int maxActiveOrdersPerMmPerTicker = 40;
 
     public int getMarketMakers() { return marketMakers; }
     public void setMarketMakers(int marketMakers) { this.marketMakers = Math.max(5, Math.min(30, marketMakers)); }
 
     public int getMmLevels() { return mmLevels; }
     public void setMmLevels(int mmLevels) { this.mmLevels = Math.max(3, Math.min(8, mmLevels)); }
+
+    public int getMaxActiveOrdersPerMmPerTicker() { return maxActiveOrdersPerMmPerTicker; }
+    public void setMaxActiveOrdersPerMmPerTicker(int v) { this.maxActiveOrdersPerMmPerTicker = Math.max(4, Math.min(200, v)); }
 }

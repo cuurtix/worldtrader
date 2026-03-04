@@ -6,10 +6,15 @@ public record MarketMicroStatsDto(
         long cancelRequests,
         long cancelSuccess,
         long totalTrades,
+        double cancelToSubmitRatio,
         double cancelToTradeRatio,
-        double avgSpread,
+        double spreadMean,
+        double spreadP95,
         double avgTopDepth,
-        double avgTradeSize,
+        double tradeSizeMean,
+        double tradeSizeP95,
         double lag1ReturnAutocorr,
+        double ofiReturnCorr,
+        double volatilityClustering,
         long totalRestingOrders
 ) {}

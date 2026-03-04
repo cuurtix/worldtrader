@@ -40,9 +40,10 @@ public class MarketSimulationService {
     void init() {
         seed();
         initMarketMakers(8);
-        flowCategories.add(new NoiseFlowCategory());
+        flowCategories.add(new RetailNoiseFlowCategory());
         flowCategories.add(new MomentumFlowCategory());
         flowCategories.add(new MeanReversionFlowCategory());
+        flowCategories.add(new NewsShockFlowCategory());
         task = scheduler.scheduleAtFixedRate(this::tick, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
     }
 
@@ -119,6 +120,8 @@ public class MarketSimulationService {
         int submitted = 0;
         AgentContext ctx = new AgentContext(regime, this);
         for (MarketMakerAgent mm : marketMakers) {
+            double pRefresh = Math.min(1.0, mm.params().refreshRate() * (intervalMillis / 1000.0));
+            if (ThreadLocalRandom.current().nextDouble() > pRefresh) continue;
             for (OrderRequest req : mm.generate(ctx)) {
                 if (submitted >= budget) return submitted;
                 try {
@@ -133,16 +136,16 @@ public class MarketSimulationService {
     private int runFlowCategories(double dt, int budget) {
         if (budget <= 0) return 0;
         int submitted = 0;
-        OrderFlowContext context = new OrderFlowContext(regime, this);
         for (String ticker : tickers()) {
+            OrderFlowContext context = new OrderFlowContext(regime, this, ticker);
             for (OrderFlowCategory category : flowCategories) {
-                double lambda = category.intensity(context, ticker);
+                double lambda = category.intensity(context);
                 int count = PoissonSampler.sample(lambda * dt);
                 if (count == 0) continue;
-                for (OrderIntent intent : category.generateOrders(context, ticker, dt, count)) {
+                for (OrderIntent intent : category.generateOrders(context, dt, count)) {
                     if (submitted >= budget) return submitted;
                     try {
-                        submitOrder(new OrderRequest(intent.traderId(), intent.ticker(), intent.side(), intent.type(), intent.qty(), intent.price(), intent.tif()));
+                        submitOrder(category.buildOrder(intent));
                         submitted++;
                     } catch (Exception ignored) {}
                 }

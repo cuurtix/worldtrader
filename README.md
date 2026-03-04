@@ -57,7 +57,7 @@ mvn test
 
 ## Améliorations realism/perf (microstructure)
 - **Multiple market makers** (pool configuré, quotes/skew/cancel-refresh par MM)
-- **Flux par catégories + Poisson** (`OrderFlowCategory`, intensité variable, bursts)
+- **Flux par catégories + Poisson** (`RetailNoiseFlow`, `MomentumFlow`, `MeanReversionFlow`, `NewsShockFlow`)
 - **Tailles d’ordres heavy-tail** (mélange lognormal: petits ordres + blocs)
 - **Cancel/replace massif** dépendant distance au mid + stress
 - **Régime enrichi**: `burstiness`, `maxOrdersPerTick`, `maxCancelsPerTick`

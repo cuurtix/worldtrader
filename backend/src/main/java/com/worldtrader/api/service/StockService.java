@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 
 @Service
@@ -31,13 +32,14 @@ public class StockService {
         return List.copyOf(stocks.values());
     }
 
+    public Optional<Stock> findStockByTicker(String rawTicker) {
+        String ticker = normalizeTicker(rawTicker);
+        return Optional.ofNullable(stocks.get(ticker));
+    }
+
     public Stock getStockByTicker(String rawTicker) {
         String ticker = normalizeTicker(rawTicker);
-        Stock stock = stocks.get(ticker);
-        if (stock == null) {
-            throw new StockNotFoundException(ticker);
-        }
-        return stock;
+        return findStockByTicker(ticker).orElseThrow(() -> new StockNotFoundException(ticker));
     }
 
     public double getPriceByTicker(String rawTicker) {

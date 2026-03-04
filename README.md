@@ -1,6 +1,6 @@
 # WorldTrader
 
-Ce dépôt contient maintenant un backend Spring Boot pour l'API de stocks.
+Ce dépôt contient un backend Spring Boot pour l'API de stocks.
 
 ## Backend API (port 8000)
 
@@ -12,8 +12,8 @@ mvn spring-boot:run
 
 ### Endpoints
 - `GET /api/v1/stocks`
-- `GET /api/v1/stocks/{ticker}`
-- `GET /api/v1/stocks/price/{ticker}`
+- `GET /api/v1/stocks/{ticker}?view=BASIC`
+- `GET /api/v1/stocks/price/{ticker}` (retourne un JSON numérique: `double`)
 - `GET /api/v1/stocks/prices?tickers=AAPL,MSFT,TSLA`
 - `GET /api/v1/stocks/random`
 

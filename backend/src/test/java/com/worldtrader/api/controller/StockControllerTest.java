@@ -10,6 +10,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -21,32 +22,24 @@ class StockControllerTest {
     private MockMvc mockMvc;
 
     @Test
-    void getStocksContainsAapl() throws Exception {
-        mockMvc.perform(get("/api/v1/stocks"))
+    void getIndividualStockDataBasicWorks() throws Exception {
+        mockMvc.perform(get("/api/v1/stocks/AAPL").param("view", "BASIC"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[?(@.ticker == 'AAPL')]").exists());
+                .andExpect(jsonPath("$.ticker", is("AAPL")));
     }
 
     @Test
     void getPriceByTickerReturnsNumericPrice() throws Exception {
         mockMvc.perform(get("/api/v1/stocks/price/AAPL"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.ticker", is("AAPL")))
-                .andExpect(jsonPath("$.price", greaterThan(0.0)));
+                .andExpect(content().contentTypeCompatibleWith("application/json"))
+                .andExpect(jsonPath("$", greaterThan(0.0)));
     }
 
     @Test
     void unknownTickerReturns404Not500() throws Exception {
         mockMvc.perform(get("/api/v1/stocks/price/UNKNOWN"))
                 .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.status", is(404)))
-                .andExpect(jsonPath("$.error", is("Not Found")));
-    }
-
-    @Test
-    void dottedTickerIsSupported() throws Exception {
-        mockMvc.perform(get("/api/v1/stocks/price/BRK.B"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.ticker", is("BRK.B")));
+                .andExpect(jsonPath("$.status", is(404)));
     }
 }

@@ -48,6 +48,13 @@ public class OrderBook {
         return false;
     }
 
+    public List<Order> restingOrders() {
+        List<Order> out = new ArrayList<>();
+        bids.values().forEach(l -> out.addAll(l.queue()));
+        asks.values().forEach(l -> out.addAll(l.queue()));
+        return out;
+    }
+
     public int depthQty(Side side, int levels) {
         NavigableMap<Double, PriceLevel> map = side == Side.BUY ? bids : asks;
         return map.values().stream().limit(levels).mapToInt(PriceLevel::totalQty).sum();

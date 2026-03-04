@@ -53,3 +53,12 @@ Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/orders" -Conte
 cd backend
 mvn test
 ```
+
+
+## Améliorations realism/perf (microstructure)
+- **Multiple market makers** (pool configuré, quotes/skew/cancel-refresh par MM)
+- **Flux par catégories + Poisson** (`OrderFlowCategory`, intensité variable, bursts)
+- **Tailles d’ordres heavy-tail** (mélange lognormal: petits ordres + blocs)
+- **Cancel/replace massif** dépendant distance au mid + stress
+- **Régime enrichi**: `burstiness`, `maxOrdersPerTick`, `maxCancelsPerTick`
+- **Prix toujours émergent du matching** (aucun random-walk sur prix)

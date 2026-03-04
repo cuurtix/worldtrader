@@ -1,40 +1,34 @@
 package com.worldtrader.api.service;
 
 import com.worldtrader.api.exception.StockNotFoundException;
+import com.worldtrader.api.market.service.MarketSimulationService;
 import com.worldtrader.api.model.Stock;
 import org.springframework.stereotype.Service;
 
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 
 @Service
 public class StockService {
 
-    private final Map<String, Stock> stocks = new LinkedHashMap<>();
+    private final MarketSimulationService market;
 
-    public StockService() {
-        seedInMemoryStocks();
-    }
-
-    private void seedInMemoryStocks() {
-        upsert(new Stock("AAPL", 190.12));
-        upsert(new Stock("MSFT", 421.33));
-        upsert(new Stock("TSLA", 178.44));
-        upsert(new Stock("NVDA", 116.78));
-        upsert(new Stock("BRK.B", 412.05));
+    public StockService(MarketSimulationService market) {
+        this.market = market;
     }
 
     public List<Stock> getAllStocks() {
-        return List.copyOf(stocks.values());
+        return market.tickers().stream().sorted().map(this::toStock).toList();
     }
 
     public Optional<Stock> findStockByTicker(String rawTicker) {
         String ticker = normalizeTicker(rawTicker);
-        return Optional.ofNullable(stocks.get(ticker));
+        if (!market.tickers().contains(ticker)) {
+            return Optional.empty();
+        }
+        return Optional.of(toStock(ticker));
     }
 
     public Stock getStockByTicker(String rawTicker) {
@@ -44,18 +38,6 @@ public class StockService {
 
     public double getPriceByTicker(String rawTicker) {
         return getStockByTicker(rawTicker).price();
-    }
-
-    public Map<String, Double> getPricesByTickers(String rawTickersCsv) {
-        if (rawTickersCsv == null || rawTickersCsv.isBlank()) {
-            throw new IllegalArgumentException("Query parameter 'tickers' is required");
-        }
-        Map<String, Double> out = new LinkedHashMap<>();
-        for (String token : rawTickersCsv.split(",")) {
-            String ticker = normalizeTicker(token);
-            out.put(ticker, getPriceByTicker(ticker));
-        }
-        return out;
     }
 
     public Stock getRandomStock() {
@@ -74,7 +56,7 @@ public class StockService {
         return ticker;
     }
 
-    private void upsert(Stock stock) {
-        stocks.put(normalizeTicker(stock.ticker()), new Stock(normalizeTicker(stock.ticker()), stock.price()));
+    private Stock toStock(String ticker) {
+        return new Stock(ticker, market.companyName(ticker), market.getLastPrice(ticker));
     }
 }

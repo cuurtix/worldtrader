@@ -9,17 +9,11 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.bind.annotation.*;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-
-import static org.springframework.http.HttpStatus.NOT_FOUND;
 
 @RestController
 @RequestMapping("/api/v1/stocks")
@@ -47,25 +41,28 @@ public class StockController {
             @Parameter(description = "Ticker symbol, case-insensitive") @PathVariable String ticker,
             @RequestParam(value = "view", required = false, defaultValue = "BASIC") String view
     ) {
-        String normalized = stockService.normalizeTicker(ticker);
-        return stockService.findStockByTicker(normalized)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+        return ResponseEntity.ok(stockService.getStockByTicker(ticker));
     }
 
     @GetMapping("/price/{ticker:.+}")
     @Operation(summary = "Get stock price by ticker", description = "Returns a numeric JSON value (double)")
     public ResponseEntity<Double> getStockPrice(@PathVariable String ticker) {
-        String normalized = stockService.normalizeTicker(ticker);
-        Stock stock = stockService.findStockByTicker(normalized)
-                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "No stock with ticker symbol " + normalized + " exists"));
+        Stock stock = stockService.getStockByTicker(ticker);
         return ResponseEntity.ok(stock.price());
     }
 
     @GetMapping("/prices")
     @Operation(summary = "Batch prices by comma-separated tickers")
     public ResponseEntity<Map<String, Double>> getPricesByTickers(@RequestParam("tickers") String tickers) {
-        return ResponseEntity.ok(stockService.getPricesByTickers(tickers));
+        if (tickers == null || tickers.isBlank()) {
+            throw new IllegalArgumentException("Query parameter 'tickers' is required");
+        }
+        Map<String, Double> out = new LinkedHashMap<>();
+        for (String token : tickers.split(",")) {
+            String normalized = stockService.normalizeTicker(token);
+            out.put(normalized, stockService.getPriceByTicker(normalized));
+        }
+        return ResponseEntity.ok(out);
     }
 
     @GetMapping("/random")

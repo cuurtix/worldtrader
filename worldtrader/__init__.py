@@ -1,6 +1,5 @@
-"""WorldTrader package."""
+"""WorldTrader global multi-asset simulation platform."""
 
-from .engine import MarketEngine
-from .models import Order, Portfolio, Side, Stock
+from .simulation.runner import SimulationRunner
 
-__all__ = ["MarketEngine", "Order", "Portfolio", "Side", "Stock"]
+__all__ = ["SimulationRunner"]

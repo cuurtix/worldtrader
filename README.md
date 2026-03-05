@@ -1,22 +1,103 @@
-# WorldTrader
+# worldtrader
+# WorldTrader Backend (Spring Boot)
 
-Simulation boursière originale inspirée des fonctionnalités classiques d'un moteur de marché:
+Backend orienté **microstructure** pour simulation de marché (order book + matching + agents + régime), sans frontend.
 
-- carnet d'ordres (bid/ask)
-- matching prix/temps
-- gestion de portefeuille
-- agents de trading simples
-- boucle de simulation par ticks
-- export des résultats
-
-## Lancement
-
+## Run
 ```bash
-python -m worldtrader.simulation --ticks 50 --seed 42
+cd backend
+mvn spring-boot:run
 ```
 
-## Tests
+## Endpoints existants conservés
+- `GET /api/v1/stocks`
+- `GET /api/v1/stocks/{ticker}?view=BASIC`
+- `GET /api/v1/stocks/price/{ticker}`
+- `GET /api/v1/market`
+- `POST /api/v1/market/pause`
+- `POST /api/v1/market/resume`
+- `POST /api/v1/market/interval?millis=250`
 
+## Nouveaux endpoints microstructure
+- `GET /api/v1/orderbook/{ticker}?levels=20`
+- `POST /api/v1/orders`
+- `DELETE /api/v1/orders/{orderId}`
+- `GET /api/v1/trades/{ticker}?limit=200`
+- `GET /api/v1/portfolio/{traderId}`
+- `GET /api/v1/regime`
+- `PUT /api/v1/regime`
+- `GET /api/v1/metrics/{ticker}`
+- `GET /api/v1/metrics/market` (cancel rate, spread moyen, profondeur, tailles, autocorr retours)
+
+## Exemple order submit
 ```bash
-python -m unittest discover -s tests -v
+curl -X POST http://localhost:8000/api/v1/orders \
+  -H "Content-Type: application/json" \
+  -d '{"traderId":"PLAYER_1","ticker":"AAPL","side":"BUY","type":"LIMIT","qty":10,"price":189.8,"tif":"GTC"}'
+```
+
+## Exemple PowerShell
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/orders" -ContentType "application/json" -Body '{"traderId":"PLAYER_1","ticker":"AAPL","side":"SELL","type":"MARKET","qty":5,"tif":"IOC"}'
+```
+
+## Modèle implémenté
+- Carnet L2 par ticker (`TreeMap` bid/ask) + priorité prix/FIFO
+- Matching limit/market, partial fills, cancel
+- Trades en ring buffer in-memory
+- Portefeuilles in-memory (cash/positions/realized/unrealized PnL)
+- Agents invisibles: MarketMaker, Noise, Momentum/FOMO, MeanReversion
+- Régime (`riskOnOff`, `centralBank`, `politicalStress`, `liquidity`, `newsIntensity`, `volatilityTarget`)
+- Métriques: mid/spread/depth, OFI/NOFI, liquidity imbalance, RV, VWAP
+
+## Tests
+```bash
+cd backend
+mvn test
+```
+
+
+## Améliorations realism/perf (microstructure)
+- **Multiple market makers** (pool configuré, quotes/skew/cancel-refresh par MM)
+- **Flux par catégories + Poisson** (`RetailNoiseFlow`, `MomentumFlow`, `MeanReversionFlow`, `NewsShockFlow`, `ArbFlow`, `LiquidationFlow`)
+- **Tailles d’ordres heavy-tail** (mélange lognormal: petits ordres + blocs)
+- **Cancel/replace massif** dépendant distance au mid + stress
+- **Régime enrichi**: `burstiness`, `maxOrdersPerTick`, `maxCancelsPerTick`
+- **Prix toujours émergent du matching** (aucun random-walk sur prix)
+
+
+## Script simulation 10k ticks
+```bash
+python backend/scripts/run_10k_ticks.py
+```
+(Assume l'API Spring Boot déjà lancée sur localhost:8000.)
+
+## Retail Frontend (Vite + React + TypeScript)
+Le dossier `frontend/` fournit une interface retail (watchlist + chart chandlestick/volume + ticket + positions + compte + macro panel).
+
+### Lancement frontend
+```bash
+cd frontend
+cp .env.example .env
+npm install
+npm run dev
+```
+Par défaut: `VITE_API_BASE=http://localhost:8000`.
+
+### Endpoints gameplay ajoutés (compatibles)
+- `POST /api/v1/portfolio/{traderId}/deposit?amount=...`
+- `POST /api/v1/portfolio/{traderId}/withdraw?amount=...`
+
+### Mode offline demo
+Si l'API n'est pas disponible:
+```bash
+cd frontend
+VITE_OFFLINE_DEMO=true npm run dev
+```
+
+### Tests frontend
+```bash
+cd frontend
+npm run test
+npm run test:e2e
 ```

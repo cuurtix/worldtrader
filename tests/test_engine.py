@@ -1,37 +1,18 @@
 import unittest
 
-from worldtrader.engine import MarketEngine
-from worldtrader.models import Order, Portfolio, Side, Stock
+from worldtrader.simulation.config import load_config
+from worldtrader.simulation.runner import SimulationRunner
 
 
-class TestMarketEngine(unittest.TestCase):
-    def setUp(self) -> None:
-        self.engine = MarketEngine([Stock("ACME", 100.0)], fee_rate=0.0)
-        self.engine.register_trader("buyer", Portfolio(cash=1000.0, positions={"ACME": 0}))
-        self.engine.register_trader("seller", Portfolio(cash=1000.0, positions={"ACME": 10}))
-
-    def test_simple_match(self):
-        buy = Order("buyer", "ACME", Side.BUY, 5, 101.0, 1)
-        sell = Order("seller", "ACME", Side.SELL, 5, 99.0, 1)
-
-        self.engine.submit_order(buy, tick=1)
-        trades = self.engine.submit_order(sell, tick=1)
-
-        self.assertEqual(len(trades), 1)
-        self.assertEqual(self.engine.portfolios["buyer"].positions["ACME"], 5)
-        self.assertEqual(self.engine.portfolios["seller"].positions["ACME"], 5)
-
-    def test_price_time_priority(self):
-        b1 = Order("buyer", "ACME", Side.BUY, 2, 101.0, 1)
-        b2 = Order("buyer", "ACME", Side.BUY, 2, 102.0, 2)
-        s1 = Order("seller", "ACME", Side.SELL, 2, 100.0, 3)
-
-        self.engine.submit_order(b1, tick=1)
-        self.engine.submit_order(b2, tick=2)
-        trades = self.engine.submit_order(s1, tick=3)
-
-        self.assertEqual(len(trades), 1)
-        self.assertEqual(trades[0].quantity, 2)
+class EngineFlowTests(unittest.TestCase):
+    def test_runner_generates_outputs(self):
+        cfg = load_config("configs/world_market.yaml")
+        runner = SimulationRunner(cfg)
+        result = runner.run(ticks=20, seed=7)
+        self.assertIn("trades", result)
+        self.assertIn("snapshots", result)
+        self.assertIn("summary", result)
+        self.assertGreater(len(result["snapshots"]), 0)
 
 
 if __name__ == "__main__":

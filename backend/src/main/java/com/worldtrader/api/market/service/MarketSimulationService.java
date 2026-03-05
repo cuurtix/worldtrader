@@ -330,9 +330,9 @@ public class MarketSimulationService {
                     long epoch = t.timestamp().getEpochSecond();
                     long bucket = (epoch / tfSec) * tfSec;
                     CandleDto.MutableCandle c = buckets.computeIfAbsent(bucket, b -> new CandleDto.MutableCandle(bucket, t.price(), t.price(), t.price(), t.price(), t.qty()));
-                    c.high = Math.max(c.high, t.price());
-                    c.low = Math.min(c.low, t.price());
-                    c.close = t.price();
+                    c.h = Math.max(c.h, t.price());
+                    c.l = Math.min(c.l, t.price());
+                    c.c = t.price();
                     c.v += t.qty();
                 });
 

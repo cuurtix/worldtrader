@@ -71,33 +71,3 @@ mvn test
 python backend/scripts/run_10k_ticks.py
 ```
 (Assume l'API Spring Boot déjà lancée sur localhost:8000.)
-
-## Retail Frontend (Vite + React + TypeScript)
-Le dossier `frontend/` fournit une interface retail (watchlist + chart chandlestick/volume + ticket + positions + compte + macro panel).
-
-### Lancement frontend
-```bash
-cd frontend
-cp .env.example .env
-npm install
-npm run dev
-```
-Par défaut: `VITE_API_BASE=http://localhost:8000`.
-
-### Endpoints gameplay ajoutés (compatibles)
-- `POST /api/v1/portfolio/{traderId}/deposit?amount=...`
-- `POST /api/v1/portfolio/{traderId}/withdraw?amount=...`
-
-### Mode offline demo
-Si l'API n'est pas disponible:
-```bash
-cd frontend
-VITE_OFFLINE_DEMO=true npm run dev
-```
-
-### Tests frontend
-```bash
-cd frontend
-npm run test
-npm run test:e2e
-```

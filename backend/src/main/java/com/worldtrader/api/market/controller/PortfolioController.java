@@ -12,5 +12,17 @@ public class PortfolioController {
     public PortfolioController(MarketSimulationService market) { this.market = market; }
 
     @GetMapping("/{traderId}")
-    public ResponseEntity<PortfolioDto> get(@PathVariable String traderId) { return ResponseEntity.ok(market.getPortfolio(traderId)); }
+    public ResponseEntity<PortfolioDto> get(@PathVariable String traderId) {
+        return ResponseEntity.ok(market.getPortfolio(traderId));
+    }
+
+    @PostMapping("/{traderId}/deposit")
+    public ResponseEntity<PortfolioDto> deposit(@PathVariable String traderId, @RequestParam double amount) {
+        return ResponseEntity.ok(market.deposit(traderId, amount));
+    }
+
+    @PostMapping("/{traderId}/withdraw")
+    public ResponseEntity<PortfolioDto> withdraw(@PathVariable String traderId, @RequestParam double amount) {
+        return ResponseEntity.ok(market.withdraw(traderId, amount));
+    }
 }

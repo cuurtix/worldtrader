@@ -300,6 +300,20 @@ public class MarketSimulationService {
         return dq.stream().limit(limit).toList();
     }
 
+
+    public PortfolioDto deposit(String traderId, double amount) {
+        Portfolio p = portfolios.computeIfAbsent(traderId, id -> new Portfolio(id, 1_000_000));
+        if (amount <= 0) throw new IllegalArgumentException("amount must be > 0");
+        p.adjustCash(amount);
+        return getPortfolio(traderId);
+    }
+
+    public PortfolioDto withdraw(String traderId, double amount) {
+        Portfolio p = portfolios.computeIfAbsent(traderId, id -> new Portfolio(id, 1_000_000));
+        if (amount <= 0) throw new IllegalArgumentException("amount must be > 0");
+        p.adjustCash(-amount);
+        return getPortfolio(traderId);
+    }
     public PortfolioDto getPortfolio(String traderId) {
         Portfolio p = portfolios.computeIfAbsent(traderId, id -> new Portfolio(id, 1_000_000));
         double unrealized = p.positions().entrySet().stream().mapToDouble(e -> (getLastPrice(e.getKey()) - e.getValue().avgCost()) * e.getValue().qty()).sum();

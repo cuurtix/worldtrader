@@ -19,6 +19,10 @@ public class Portfolio {
     public double realizedPnl() { return realizedPnl; }
     public Map<String, Position> positions() { return positions; }
 
+    public void adjustCash(double delta) {
+        this.cash += delta;
+    }
+
     public void applyBuy(String ticker, int qty, double price) {
         cash -= qty * price;
         positions.computeIfAbsent(ticker, t -> new Position()).buy(qty, price);

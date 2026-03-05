@@ -7,35 +7,33 @@ import com.worldtrader.api.market.model.Side;
 import java.util.*;
 
 public class OrderBook {
-    private record OrderLocator(Side side, double price, Order ref) {}
+    private record OrderLocator(Side side, long priceTicks, Order ref) {}
 
     private final String ticker;
-    private final NavigableMap<Double, PriceLevel> bids = new TreeMap<>(Comparator.reverseOrder());
-    private final NavigableMap<Double, PriceLevel> asks = new TreeMap<>();
+    private final NavigableMap<Long, PriceLevel> bids = new TreeMap<>(Comparator.reverseOrder());
+    private final NavigableMap<Long, PriceLevel> asks = new TreeMap<>();
     private final Map<String, OrderLocator> orderIndex = new HashMap<>();
 
     public OrderBook(String ticker) { this.ticker = ticker; }
     public String ticker() { return ticker; }
-    public NavigableMap<Double, PriceLevel> bids() { return bids; }
-    public NavigableMap<Double, PriceLevel> asks() { return asks; }
+    public NavigableMap<Long, PriceLevel> bids() { return bids; }
+    public NavigableMap<Long, PriceLevel> asks() { return asks; }
 
-    public Double bestBid() { return bids.isEmpty() ? null : bids.firstKey(); }
-    public Double bestAsk() { return asks.isEmpty() ? null : asks.firstKey(); }
-    public Double spread() { return (bestBid()==null||bestAsk()==null)?null:bestAsk()-bestBid(); }
-    public Double mid() { return (bestBid()==null||bestAsk()==null)?null:(bestAsk()+bestBid())/2.0; }
+    public Long bestBidTicks() { return bids.isEmpty() ? null : bids.firstKey(); }
+    public Long bestAskTicks() { return asks.isEmpty() ? null : asks.firstKey(); }
 
     public void add(Order o) {
         var sideMap = o.side() == Side.BUY ? bids : asks;
-        var level = sideMap.computeIfAbsent(o.limitPrice(), PriceLevel::new);
+        var level = sideMap.computeIfAbsent(o.priceTicks(), PriceLevel::new);
         level.add(o);
-        orderIndex.put(o.orderId(), new OrderLocator(o.side(), o.limitPrice(), o));
+        orderIndex.put(o.orderId(), new OrderLocator(o.side(), o.priceTicks(), o));
     }
 
     public boolean cancel(String orderId) {
         OrderLocator loc = orderIndex.get(orderId);
         if (loc != null) {
-            NavigableMap<Double, PriceLevel> map = loc.side() == Side.BUY ? bids : asks;
-            PriceLevel level = map.get(loc.price());
+            NavigableMap<Long, PriceLevel> map = loc.side() == Side.BUY ? bids : asks;
+            PriceLevel level = map.get(loc.priceTicks());
             if (level == null) {
                 orderIndex.remove(orderId);
                 return false;
@@ -43,7 +41,7 @@ public class OrderBook {
             boolean removed = level.queue().remove(loc.ref());
             if (removed) {
                 level.reduce(loc.ref().remainingQty());
-                if (level.empty()) map.remove(loc.price());
+                if (level.empty()) map.remove(loc.priceTicks());
                 orderIndex.remove(orderId);
                 return true;
             }
@@ -53,7 +51,7 @@ public class OrderBook {
         return cancelInMap(orderId, bids) || cancelInMap(orderId, asks);
     }
 
-    private boolean cancelInMap(String orderId, NavigableMap<Double, PriceLevel> map) {
+    private boolean cancelInMap(String orderId, NavigableMap<Long, PriceLevel> map) {
         for (var entry : new ArrayList<>(map.entrySet())) {
             var level = entry.getValue();
             Iterator<Order> it = level.queue().iterator();
@@ -71,8 +69,11 @@ public class OrderBook {
         return false;
     }
 
-    public void removeIndex(String orderId) {
-        orderIndex.remove(orderId);
+    public void removeIndex(String orderId) { orderIndex.remove(orderId); }
+
+    public Order getOrder(String orderId) {
+        OrderLocator locator = orderIndex.get(orderId);
+        return locator == null ? null : locator.ref();
     }
 
     public List<Order> restingOrders() {
@@ -83,7 +84,7 @@ public class OrderBook {
     }
 
     public int depthQty(Side side, int levels) {
-        NavigableMap<Double, PriceLevel> map = side == Side.BUY ? bids : asks;
+        NavigableMap<Long, PriceLevel> map = side == Side.BUY ? bids : asks;
         return map.values().stream().limit(levels).mapToInt(PriceLevel::totalQty).sum();
     }
 

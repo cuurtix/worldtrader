@@ -4,12 +4,12 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 
 public class PriceLevel {
-    private final double price;
+    private final long priceTicks;
     private final Deque<Order> queue = new ArrayDeque<>();
     private int totalQty = 0;
 
-    public PriceLevel(double price) { this.price = price; }
-    public double price() { return price; }
+    public PriceLevel(long priceTicks) { this.priceTicks = priceTicks; }
+    public long priceTicks() { return priceTicks; }
     public int totalQty() { return totalQty; }
     public Deque<Order> queue() { return queue; }
 

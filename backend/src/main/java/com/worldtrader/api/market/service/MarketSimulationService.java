@@ -4,8 +4,10 @@ import com.worldtrader.api.exception.StockNotFoundException;
 import com.worldtrader.api.market.agent.AgentContext;
 import com.worldtrader.api.market.agent.MarketMakerAgent;
 import com.worldtrader.api.market.dto.*;
+import com.worldtrader.api.market.engine.MatchResult;
 import com.worldtrader.api.market.engine.MatchingEngine;
 import com.worldtrader.api.market.engine.OrderBook;
+import com.worldtrader.api.market.engine.PriceTicks;
 import com.worldtrader.api.market.flow.*;
 import com.worldtrader.api.market.model.*;
 import jakarta.annotation.PostConstruct;
@@ -32,7 +34,8 @@ public class MarketSimulationService {
     private final Map<String, Deque<Double>> returnsWin = new ConcurrentHashMap<>();
     private final Map<String, Deque<Trade>> tradeWin = new ConcurrentHashMap<>();
     private final MarketRegime regime = new MarketRegime();
-    private final MatchingEngine matching = new MatchingEngine();
+    private final PriceTicks priceTicks = new PriceTicks(0.01);
+    private final MatchingEngine matching = new MatchingEngine(priceTicks);
     private final List<MarketMakerAgent> marketMakers = new ArrayList<>();
     private final List<OrderFlowCategory> flowCategories = new ArrayList<>();
     private final AtomicLong tickCount = new AtomicLong(0);
@@ -49,6 +52,7 @@ public class MarketSimulationService {
     private ScheduledFuture<?> task;
     private volatile long intervalMillis = 300;
     private volatile boolean running = true;
+    private Instant simulationTime;
 
     private final MarketSimulationProperties properties;
 
@@ -64,6 +68,7 @@ public class MarketSimulationService {
 
     public synchronized void bootstrap() {
         if (catalog.isEmpty()) {
+            simulationTime = Instant.parse("2025-01-20T15:30:00Z");
             seed();
             initMarketMakers(properties.getMarketMakers());
             flowCategories.add(new RetailNoiseFlowCategory());
@@ -108,8 +113,8 @@ public class MarketSimulationService {
         trades.put(t, new ConcurrentLinkedDeque<>());
         returnsWin.put(t, new ConcurrentLinkedDeque<>());
         tradeWin.put(t, new ConcurrentLinkedDeque<>());
-        submitInternal(new Order(UUID.randomUUID().toString(), "SEED_MM", t, Side.BUY, OrderType.LIMIT, TimeInForce.GTC, 300, px - 0.15, Instant.now()));
-        submitInternal(new Order(UUID.randomUUID().toString(), "SEED_MM", t, Side.SELL, OrderType.LIMIT, TimeInForce.GTC, 300, px + 0.15, Instant.now()));
+        submitInternal(new Order(UUID.randomUUID().toString(), "SEED_MM", t, Side.BUY, OrderType.LIMIT, TimeInForce.GTC, 300, priceTicks.toTicks(px - 0.15), simulationTime));
+        submitInternal(new Order(UUID.randomUUID().toString(), "SEED_MM", t, Side.SELL, OrderType.LIMIT, TimeInForce.GTC, 300, priceTicks.toTicks(px + 0.15), simulationTime));
     }
 
     public Set<String> tickers() { return catalog.keySet(); }
@@ -118,6 +123,7 @@ public class MarketSimulationService {
     public synchronized void tick() {
         bootstrap();
         if (!running) return;
+        simulationTime = simulationTime.plusMillis(intervalMillis);
         long tick = tickCount.incrementAndGet();
         double dt = intervalMillis / 1000.0;
         driftRegime(dt);
@@ -242,16 +248,26 @@ public class MarketSimulationService {
     public synchronized OrderResponse submitOrder(OrderRequest request) {
         validateOrder(request);
         String ticker = normalizeTicker(request.ticker());
-        Order order = new Order(UUID.randomUUID().toString(), request.traderId(), ticker, request.side(), request.type(), request.tif() == null ? TimeInForce.GTC : request.tif(), request.qty(), request.type() == OrderType.LIMIT ? request.price() : null, Instant.now());
+        long orderPriceTicks = request.type() == OrderType.LIMIT ? priceTicks.toTicks(request.price()) : 0L;
+        Order order = new Order(UUID.randomUUID().toString(), request.traderId(), ticker, request.side(), request.type(), request.tif() == null ? TimeInForce.GTC : request.tif(), request.qty(), orderPriceTicks, simulationTime);
         return submitInternal(order);
     }
 
     private OrderResponse submitInternal(Order order) {
         submittedOrders.incrementAndGet();
         OrderBook book = books.get(order.ticker());
-        List<Trade> fills = matching.execute(book, order);
+        MatchResult result = matching.execute(book, order, simulationTime);
+        List<Trade> fills = result.getFills();
         fills.forEach(this::recordTrade);
         for (Trade t : fills) applyPortfolio(t);
+
+        for (String makerOrderId : result.getFullyFilledMakerOrderIds()) {
+            OrderMeta meta = orderMeta.remove(makerOrderId);
+            if (meta != null) {
+                Set<String> set = activeOrdersByTrader.get(meta.traderId());
+                if (set != null) set.remove(makerOrderId);
+            }
+        }
 
         if (order.type() == OrderType.LIMIT && order.tif() == TimeInForce.GTC && order.remainingQty() > 0) {
             orderMeta.put(order.orderId(), new OrderMeta(order.traderId(), order.ticker(), order.side()));
@@ -293,12 +309,15 @@ public class MarketSimulationService {
         String ticker = normalizeTicker(rawTicker);
         OrderBook b = books.get(ticker);
         if (b == null) throw new StockNotFoundException(ticker);
-        List<LevelDto> bidLevels = b.bids().values().stream().limit(levels).map(l -> new LevelDto(l.price(), l.totalQty())).toList();
-        List<LevelDto> askLevels = b.asks().values().stream().limit(levels).map(l -> new LevelDto(l.price(), l.totalQty())).toList();
+        List<LevelDto> bidLevels = b.bids().values().stream().limit(levels).map(l -> new LevelDto(priceTicks.toPrice(l.priceTicks()), l.totalQty())).toList();
+        List<LevelDto> askLevels = b.asks().values().stream().limit(levels).map(l -> new LevelDto(priceTicks.toPrice(l.priceTicks()), l.totalQty())).toList();
         int bidDepth = bidLevels.stream().mapToInt(LevelDto::qty).sum();
         int askDepth = askLevels.stream().mapToInt(LevelDto::qty).sum();
         double imbalance = (bidDepth - askDepth) / (double) (bidDepth + askDepth + 1e-9);
-        return new OrderBookDto(ticker, b.bestBid(), b.bestAsk(), b.spread(), bidLevels, askLevels, imbalance);
+        Double bestBid = b.bestBidTicks() == null ? null : priceTicks.toPrice(b.bestBidTicks());
+        Double bestAsk = b.bestAskTicks() == null ? null : priceTicks.toPrice(b.bestAskTicks());
+        Double spread = (bestBid == null || bestAsk == null) ? null : bestAsk - bestBid;
+        return new OrderBookDto(ticker, bestBid, bestAsk, spread, bidLevels, askLevels, imbalance);
     }
 
     public List<Trade> getTrades(String rawTicker, int limit) {
@@ -393,7 +412,11 @@ public class MarketSimulationService {
         double vwapNum = tw.stream().mapToDouble(t -> t.price() * t.qty()).sum();
         double vwapDen = tw.stream().mapToDouble(Trade::qty).sum();
         double vwap = vwapDen == 0 ? getLastPrice(ticker) : vwapNum / vwapDen;
-        return new MetricsDto(ticker, b.mid(), b.spread(), db, da, ofi, nofi, li, rv, vwap);
+        Double bestBid = b.bestBidTicks() == null ? null : priceTicks.toPrice(b.bestBidTicks());
+        Double bestAsk = b.bestAskTicks() == null ? null : priceTicks.toPrice(b.bestAskTicks());
+        Double mid = (bestBid == null || bestAsk == null) ? null : (bestBid + bestAsk) / 2.0;
+        Double spread = (bestBid == null || bestAsk == null) ? null : bestAsk - bestBid;
+        return new MetricsDto(ticker, mid, spread, db, da, ofi, nofi, li, rv, vwap);
     }
 
     public MarketMicroStatsDto getMicroStats() {
@@ -486,8 +509,10 @@ public class MarketSimulationService {
         List<Trade> ts = getTrades(ticker, 1);
         if (!ts.isEmpty()) return ts.get(0).price();
         OrderBook b = books.get(normalizeTicker(ticker));
-        if (b.mid() != null) return b.mid();
-        return b.bestBid() != null ? b.bestBid() : b.bestAsk() != null ? b.bestAsk() : 0.0;
+        Double bestBid = b.bestBidTicks() == null ? null : priceTicks.toPrice(b.bestBidTicks());
+        Double bestAsk = b.bestAskTicks() == null ? null : priceTicks.toPrice(b.bestAskTicks());
+        if (bestBid != null && bestAsk != null) return (bestBid + bestAsk) / 2.0;
+        return bestBid != null ? bestBid : bestAsk != null ? bestAsk : 0.0;
     }
 
     private void recordTrade(Trade t) {
@@ -507,15 +532,10 @@ public class MarketSimulationService {
         }
         while (rw.size() > 300) rw.pollLast();
 
-        cleanupInactive(t.buyOrderId());
-        cleanupInactive(t.sellOrderId());
     }
 
-    private void cleanupInactive(String orderId) {
-        OrderMeta meta = orderMeta.remove(orderId);
-        if (meta == null) return;
-        Set<String> set = activeOrdersByTrader.get(meta.traderId());
-        if (set != null) set.remove(orderId);
+    public Instant simulationTime() {
+        return simulationTime;
     }
 
     private String normalizeTicker(String t) {
@@ -543,5 +563,5 @@ public class MarketSimulationService {
 
     public void pause() { running = false; }
     public void resume() { running = true; }
-    public MarketStatusDto status() { return new MarketStatusDto(running, intervalMillis, tickCount.get()); }
+    public MarketStatusDto status() { return new MarketStatusDto(running, intervalMillis, tickCount.get(), simulationTime); }
 }

@@ -1,3 +1,5 @@
 package com.worldtrader.api.market.dto;
 
-public record MarketStatusDto(boolean running, long intervalMillis, long tickCount) {}
+import java.time.Instant;
+
+public record MarketStatusDto(boolean running, long intervalMillis, long tickCount, Instant date) {}

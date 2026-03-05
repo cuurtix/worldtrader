@@ -10,6 +10,8 @@ import com.worldtrader.api.market.flow.*;
 import com.worldtrader.api.market.model.*;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -20,6 +22,7 @@ import java.util.stream.Collectors;
 
 @Service
 public class MarketSimulationService {
+    private static final Logger log = LoggerFactory.getLogger(MarketSimulationService.class);
     private record OrderMeta(String traderId, String ticker, Side side) {}
 
     private final Map<String, String> catalog = new ConcurrentHashMap<>();
@@ -115,7 +118,7 @@ public class MarketSimulationService {
     public synchronized void tick() {
         bootstrap();
         if (!running) return;
-        tickCount.incrementAndGet();
+        long tick = tickCount.incrementAndGet();
         double dt = intervalMillis / 1000.0;
         driftRegime(dt);
 
@@ -126,6 +129,11 @@ public class MarketSimulationService {
         int orderBudget = regime.getMaxOrdersPerTick();
         orderBudget -= runMarketMakerQuotes(orderBudget);
         orderBudget -= runFlowCategories(dt, orderBudget);
+
+        if (tick % 10 == 0) {
+            long totalRecent = trades.values().stream().mapToLong(Deque::size).sum();
+            log.info("sim tick={} running={} intervalMs={} totalRecentTrades={} submitted={} cancels={} trades={}", tick, running, intervalMillis, totalRecent, submittedOrders.get(), cancelSuccess.get(), totalTrades.get());
+        }
     }
 
     private void driftRegime(double dt) {
@@ -300,6 +308,55 @@ public class MarketSimulationService {
         return dq.stream().limit(limit).toList();
     }
 
+
+
+    public List<TradeTickDto> getTradesView(String rawTicker, int limit) {
+        String ticker = normalizeTicker(rawTicker);
+        List<TradeTickDto> out = getTrades(ticker, limit).stream()
+                .map(t -> new TradeTickDto(t.timestamp().getEpochSecond(), t.price(), t.qty(), t.aggressorSide().name()))
+                .toList();
+        log.info("trades view ticker={} limit={} count={} sample={}", ticker, limit, out.size(), out.stream().limit(2).toList());
+        return out;
+    }
+
+    public List<CandleDto> getCandles(String rawTicker, String tf, int limit) {
+        String ticker = normalizeTicker(rawTicker);
+        int tfSec = parseTimeframe(tf);
+        Map<Long, CandleDto.MutableCandle> buckets = new TreeMap<>();
+        List<Trade> source = getTrades(ticker, Math.max(limit * 10, 500));
+        source.stream()
+                .sorted(Comparator.comparing(Trade::timestamp))
+                .forEach(t -> {
+                    long epoch = t.timestamp().getEpochSecond();
+                    long bucket = (epoch / tfSec) * tfSec;
+                    CandleDto.MutableCandle c = buckets.computeIfAbsent(bucket, b -> new CandleDto.MutableCandle(bucket, t.price(), t.price(), t.price(), t.price(), t.qty()));
+                    c.high = Math.max(c.high, t.price());
+                    c.low = Math.min(c.low, t.price());
+                    c.close = t.price();
+                    c.v += t.qty();
+                });
+
+        List<CandleDto> candles = buckets.values().stream()
+                .map(c -> new CandleDto(c.t, c.o, c.h, c.l, c.c, c.v))
+                .toList();
+
+        if (candles.size() > limit) {
+            candles = candles.subList(candles.size() - limit, candles.size());
+        }
+        CandleDto last = candles.isEmpty() ? null : candles.get(candles.size() - 1);
+        log.info("candles ticker={} tf={}({}s) count={} last={}", ticker, tf, tfSec, candles.size(), last);
+        return candles;
+    }
+
+    private int parseTimeframe(String tf) {
+        if (tf == null || tf.isBlank()) return 1;
+        return switch (tf.trim().toLowerCase(Locale.ROOT)) {
+            case "1s" -> 1;
+            case "5s" -> 5;
+            case "1m" -> 60;
+            default -> throw new IllegalArgumentException("unsupported timeframe: " + tf);
+        };
+    }
 
     public PortfolioDto deposit(String traderId, double amount) {
         Portfolio p = portfolios.computeIfAbsent(traderId, id -> new Portfolio(id, 1_000_000));

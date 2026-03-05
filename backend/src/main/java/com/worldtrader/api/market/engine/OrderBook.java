@@ -1,9 +1,11 @@
 package com.worldtrader.api.market.engine;
 
+import com.worldtrader.api.market.dto.OrderBookSnapshot;
 import com.worldtrader.api.market.model.Order;
 import com.worldtrader.api.market.model.PriceLevel;
 import com.worldtrader.api.market.model.Side;
 
+import java.time.Instant;
 import java.util.*;
 
 public class OrderBook {
@@ -48,24 +50,6 @@ public class OrderBook {
             orderIndex.remove(orderId);
             return false;
         }
-        return cancelInMap(orderId, bids) || cancelInMap(orderId, asks);
-    }
-
-    private boolean cancelInMap(String orderId, NavigableMap<Long, PriceLevel> map) {
-        for (var entry : new ArrayList<>(map.entrySet())) {
-            var level = entry.getValue();
-            Iterator<Order> it = level.queue().iterator();
-            while (it.hasNext()) {
-                Order o = it.next();
-                if (o.orderId().equals(orderId)) {
-                    level.reduce(o.remainingQty());
-                    it.remove();
-                    orderIndex.remove(orderId);
-                    if (level.empty()) map.remove(entry.getKey());
-                    return true;
-                }
-            }
-        }
         return false;
     }
 
@@ -90,5 +74,22 @@ public class OrderBook {
 
     public int totalRestingOrders() {
         return orderIndex.size();
+    }
+
+    public OrderBookSnapshot snapshot(int depth, PriceTicks priceTicks, Instant ts) {
+        return new OrderBookSnapshot(ticker, snapshotSide(bids, depth, priceTicks), snapshotSide(asks, depth, priceTicks), ts);
+    }
+
+    private List<OrderBookSnapshot.Level> snapshotSide(NavigableMap<Long, PriceLevel> side, int depth, PriceTicks priceTicks) {
+        if (depth <= 0 || side.isEmpty()) return List.of();
+        List<OrderBookSnapshot.Level> out = new ArrayList<>(Math.min(depth, side.size()));
+        int count = 0;
+        for (Map.Entry<Long, PriceLevel> e : side.entrySet()) {
+            PriceLevel level = e.getValue();
+            out.add(new OrderBookSnapshot.Level(priceTicks.toPrice(e.getKey()), level.totalQty(), level.queue().size()));
+            count++;
+            if (count >= depth) break;
+        }
+        return List.copyOf(out);
     }
 }

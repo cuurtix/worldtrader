@@ -1,3 +1,3 @@
 package com.worldtrader.api.market.model;
 
-public enum TimeInForce { GTC, IOC }
+public enum TimeInForce { GTC, IOC, FOK }

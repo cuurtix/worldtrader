@@ -16,5 +16,12 @@ public record MarketMicroStatsDto(
         double lag1ReturnAutocorr,
         double ofiReturnCorr,
         double volatilityClustering,
-        long totalRestingOrders
+        long totalRestingOrders,
+        long ordersAccepted,
+        long ordersRejected,
+        long cancelsOk,
+        long cancelsMiss,
+        long stpSkips,
+        long fokRejects,
+        long iocRemainderCanceled
 ) {}

@@ -20,12 +20,16 @@ import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
 @Service
 public class MarketSimulationService {
     private static final Logger log = LoggerFactory.getLogger(MarketSimulationService.class);
     private record OrderMeta(String traderId, String ticker, Side side) {}
+    private record OrderLocator(String ticker, Side side, long priceTicks) {}
 
     private final Map<String, String> catalog = new ConcurrentHashMap<>();
     private final Map<String, OrderBook> books = new ConcurrentHashMap<>();
@@ -42,17 +46,30 @@ public class MarketSimulationService {
 
     private final Map<String, Set<String>> activeOrdersByTrader = new ConcurrentHashMap<>();
     private final Map<String, OrderMeta> orderMeta = new ConcurrentHashMap<>();
+    private final Map<String, OrderLocator> orderLocator = new ConcurrentHashMap<>();
 
     private final AtomicLong submittedOrders = new AtomicLong(0);
     private final AtomicLong cancelRequests = new AtomicLong(0);
     private final AtomicLong cancelSuccess = new AtomicLong(0);
     private final AtomicLong totalTrades = new AtomicLong(0);
+    private final AtomicLong ordersAccepted = new AtomicLong(0);
+    private final AtomicLong ordersRejected = new AtomicLong(0);
+    private final AtomicLong cancelsOk = new AtomicLong(0);
+    private final AtomicLong cancelsMiss = new AtomicLong(0);
+    private final AtomicLong stpSkips = new AtomicLong(0);
+    private final AtomicLong fokRejects = new AtomicLong(0);
+    private final AtomicLong iocRemainderCanceled = new AtomicLong(0);
+    private final AtomicLong submitErrors = new AtomicLong(0);
 
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private ScheduledFuture<?> task;
     private volatile long intervalMillis = 300;
     private volatile boolean running = true;
     private Instant simulationTime;
+    private final boolean noShortSelling = true;
+    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final Lock readLock = rwLock.readLock();
+    private final Lock writeLock = rwLock.writeLock();
 
     private final MarketSimulationProperties properties;
 
@@ -66,17 +83,22 @@ public class MarketSimulationService {
         task = scheduler.scheduleAtFixedRate(this::tick, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
     }
 
-    public synchronized void bootstrap() {
-        if (catalog.isEmpty()) {
-            simulationTime = Instant.parse("2025-01-20T15:30:00Z");
-            seed();
-            initMarketMakers(properties.getMarketMakers());
-            flowCategories.add(new RetailNoiseFlowCategory());
-            flowCategories.add(new MomentumFlowCategory());
-            flowCategories.add(new MeanReversionFlowCategory());
-            flowCategories.add(new NewsShockFlowCategory());
-            flowCategories.add(new ArbFlowCategory());
-            flowCategories.add(new LiquidationFlowCategory());
+    public void bootstrap() {
+        writeLock.lock();
+        try {
+            if (catalog.isEmpty()) {
+                simulationTime = Instant.parse("2025-01-20T15:30:00Z");
+                seed();
+                initMarketMakers(properties.getMarketMakers());
+                flowCategories.add(new RetailNoiseFlowCategory());
+                flowCategories.add(new MomentumFlowCategory());
+                flowCategories.add(new MeanReversionFlowCategory());
+                flowCategories.add(new NewsShockFlowCategory());
+                flowCategories.add(new ArbFlowCategory());
+                flowCategories.add(new LiquidationFlowCategory());
+            }
+        } finally {
+            writeLock.unlock();
         }
     }
 
@@ -110,6 +132,10 @@ public class MarketSimulationService {
         catalog.put(t, n);
         OrderBook b = new OrderBook(t);
         books.put(t, b);
+        Portfolio seed = portfolios.computeIfAbsent("SEED_MM", id -> new Portfolio(id, 10_000_000));
+        if (seed.position(t).qty() < 10_000) {
+            seed.applyBuy(t, 10_000, px);
+        }
         trades.put(t, new ConcurrentLinkedDeque<>());
         returnsWin.put(t, new ConcurrentLinkedDeque<>());
         tradeWin.put(t, new ConcurrentLinkedDeque<>());
@@ -117,10 +143,27 @@ public class MarketSimulationService {
         submitInternal(new Order(UUID.randomUUID().toString(), "SEED_MM", t, Side.SELL, OrderType.LIMIT, TimeInForce.GTC, 300, priceTicks.toTicks(px + 0.15), simulationTime));
     }
 
-    public Set<String> tickers() { return catalog.keySet(); }
-    public String companyName(String ticker) { return catalog.get(ticker); }
+    public Set<String> tickers() {
+        readLock.lock();
+        try {
+            return Set.copyOf(catalog.keySet());
+        } finally {
+            readLock.unlock();
+        }
+    }
 
-    public synchronized void tick() {
+    public String companyName(String ticker) {
+        readLock.lock();
+        try {
+            return catalog.get(ticker);
+        } finally {
+            readLock.unlock();
+        }
+    }
+
+    public void tick() {
+        writeLock.lock();
+        try {
         bootstrap();
         if (!running) return;
         simulationTime = simulationTime.plusMillis(intervalMillis);
@@ -138,7 +181,10 @@ public class MarketSimulationService {
 
         if (tick % 10 == 0) {
             long totalRecent = trades.values().stream().mapToLong(Deque::size).sum();
-            log.info("sim tick={} running={} intervalMs={} totalRecentTrades={} submitted={} cancels={} trades={}", tick, running, intervalMillis, totalRecent, submittedOrders.get(), cancelSuccess.get(), totalTrades.get());
+            log.info("sim tick={} running={} intervalMs={} totalRecentTrades={} submitted={} cancels={} trades={} accepted={} rejected={} stpSkips={} fokRejects={}", tick, running, intervalMillis, totalRecent, submittedOrders.get(), cancelSuccess.get(), totalTrades.get(), ordersAccepted.get(), ordersRejected.get(), stpSkips.get(), fokRejects.get());
+        }
+        } finally {
+            writeLock.unlock();
         }
     }
 
@@ -164,7 +210,10 @@ public class MarketSimulationService {
                 try {
                     submitOrder(req);
                     submitted++;
-                } catch (Exception ignored) {}
+                } catch (Exception ex) {
+                    submitErrors.incrementAndGet();
+                    log.debug("market maker submit failed trader={} ticker={} reason={}", mm.traderId(), req.ticker(), ex.toString());
+                }
             }
         }
         return submitted;
@@ -201,7 +250,10 @@ public class MarketSimulationService {
                     try {
                         submitOrder(category.buildOrder(intent));
                         submitted++;
-                    } catch (Exception ignored) {}
+                    } catch (Exception ex) {
+                        submitErrors.incrementAndGet();
+                        log.debug("flow submit failed ticker={} category={} reason={}", ticker, category.getClass().getSimpleName(), ex.toString());
+                    }
                 }
             }
         }
@@ -245,18 +297,36 @@ public class MarketSimulationService {
         return canceled;
     }
 
-    public synchronized OrderResponse submitOrder(OrderRequest request) {
-        validateOrder(request);
-        String ticker = normalizeTicker(request.ticker());
-        long orderPriceTicks = request.type() == OrderType.LIMIT ? priceTicks.toTicks(request.price()) : 0L;
-        Order order = new Order(UUID.randomUUID().toString(), request.traderId(), ticker, request.side(), request.type(), request.tif() == null ? TimeInForce.GTC : request.tif(), request.qty(), orderPriceTicks, simulationTime);
-        return submitInternal(order);
+    public OrderResponse submitOrder(OrderRequest request) {
+        writeLock.lock();
+        try {
+            validateOrder(request);
+            String ticker = normalizeTicker(request.ticker());
+            TimeInForce tif = request.tif() == null ? TimeInForce.GTC : request.tif();
+            long orderPriceTicks = request.type() == OrderType.LIMIT ? priceTicks.toTicks(request.price()) : 0L;
+            Order order = new Order(UUID.randomUUID().toString(), request.traderId(), ticker, request.side(), request.type(), tif, request.qty(), orderPriceTicks, simulationTime);
+            return submitInternal(order);
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     private OrderResponse submitInternal(Order order) {
         submittedOrders.incrementAndGet();
         OrderBook book = books.get(order.ticker());
+        OrderRejectReason risk = validateRisk(order, book);
+        if (risk != OrderRejectReason.NONE) {
+            ordersRejected.incrementAndGet();
+            return new OrderResponse(order.orderId(), OrderStatus.REJECTED, List.of(), order.remainingQty(), 0, 0, risk);
+        }
+        if (order.tif() == TimeInForce.FOK && !matching.canFullyFill(book, order)) {
+            ordersRejected.incrementAndGet();
+            fokRejects.incrementAndGet();
+            return new OrderResponse(order.orderId(), OrderStatus.EXPIRED, List.of(), order.remainingQty(), 0, 0, OrderRejectReason.FOK_NOT_FILLED);
+        }
+
         MatchResult result = matching.execute(book, order, simulationTime);
+        stpSkips.addAndGet(result.getStpSkips());
         List<Trade> fills = result.getFills();
         fills.forEach(this::recordTrade);
         for (Trade t : fills) applyPortfolio(t);
@@ -267,15 +337,67 @@ public class MarketSimulationService {
                 Set<String> set = activeOrdersByTrader.get(meta.traderId());
                 if (set != null) set.remove(makerOrderId);
             }
+            orderLocator.remove(makerOrderId);
         }
 
         if (order.type() == OrderType.LIMIT && order.tif() == TimeInForce.GTC && order.remainingQty() > 0) {
             orderMeta.put(order.orderId(), new OrderMeta(order.traderId(), order.ticker(), order.side()));
             activeOrdersByTrader.computeIfAbsent(order.traderId(), k -> ConcurrentHashMap.newKeySet()).add(order.orderId());
+            orderLocator.put(order.orderId(), new OrderLocator(order.ticker(), order.side(), order.priceTicks()));
         }
 
-        OrderStatus status = fills.isEmpty() && order.type() == OrderType.MARKET ? OrderStatus.REJECTED : order.remainingQty() == 0 ? OrderStatus.FILLED : fills.isEmpty() ? OrderStatus.NEW : OrderStatus.PARTIALLY_FILLED;
-        return new OrderResponse(order.orderId(), status, fills.stream().map(f -> new FillDto(f.tradeId(), f.price(), f.qty())).toList(), order.remainingQty());
+        int filledQty = fills.stream().mapToInt(Trade::qty).sum();
+        int remainingCanceledQty = 0;
+        OrderStatus status;
+        OrderRejectReason reason = OrderRejectReason.NONE;
+        if (fills.isEmpty() && order.type() == OrderType.MARKET) {
+            status = OrderStatus.REJECTED;
+            reason = OrderRejectReason.INSUFFICIENT_LIQUIDITY;
+            ordersRejected.incrementAndGet();
+        } else if (order.tif() == TimeInForce.IOC && order.remainingQty() > 0) {
+            remainingCanceledQty = order.remainingQty();
+            iocRemainderCanceled.addAndGet(remainingCanceledQty);
+            status = fills.isEmpty() ? OrderStatus.CANCELED : OrderStatus.PARTIALLY_FILLED;
+            ordersAccepted.incrementAndGet();
+        } else {
+            status = order.remainingQty() == 0 ? OrderStatus.FILLED : fills.isEmpty() ? OrderStatus.NEW : OrderStatus.PARTIALLY_FILLED;
+            ordersAccepted.incrementAndGet();
+        }
+        return new OrderResponse(order.orderId(), status, fills.stream().map(f -> new FillDto(f.tradeId(), f.price(), f.qty())).toList(), order.remainingQty(), filledQty, remainingCanceledQty, reason);
+    }
+
+    private OrderRejectReason validateRisk(Order order, OrderBook book) {
+        Portfolio p = portfolios.computeIfAbsent(order.traderId(), id -> new Portfolio(id, 1_000_000));
+        if (order.side() == Side.BUY) {
+            double estimated;
+            if (order.type() == OrderType.LIMIT) {
+                estimated = priceTicks.toPrice(order.priceTicks()) * order.quantity();
+            } else {
+                estimated = estimateMarketBuyNotional(book, order);
+                if (estimated < 0) return OrderRejectReason.INSUFFICIENT_LIQUIDITY;
+            }
+            if (p.cash() < estimated) return OrderRejectReason.INSUFFICIENT_CASH;
+        } else if (noShortSelling) {
+            int positionQty = p.position(order.ticker()).qty();
+            if (positionQty < order.quantity()) return OrderRejectReason.INSUFFICIENT_POSITION;
+        }
+        return OrderRejectReason.NONE;
+    }
+
+    private double estimateMarketBuyNotional(OrderBook book, Order order) {
+        int needed = order.quantity();
+        double notional = 0.0;
+        for (Map.Entry<Long, PriceLevel> e : book.asks().entrySet()) {
+            double px = priceTicks.toPrice(e.getKey());
+            for (Order maker : e.getValue().queue()) {
+                if (maker.traderId().equals(order.traderId())) continue;
+                int qty = Math.min(needed, maker.remainingQty());
+                notional += qty * px;
+                needed -= qty;
+                if (needed == 0) return notional;
+            }
+        }
+        return -1.0;
     }
 
     private void applyPortfolio(Trade t) {
@@ -285,46 +407,88 @@ public class MarketSimulationService {
         seller.applySell(t.ticker(), t.qty(), t.price());
     }
 
-    public synchronized boolean cancelOrder(String orderId) {
-        boolean canceled = books.values().stream().anyMatch(b -> b.cancel(orderId));
+    public boolean cancelOrder(String orderId) {
+        writeLock.lock();
+        try {
+        OrderLocator locator = orderLocator.get(orderId);
+        if (locator == null) {
+            cancelsMiss.incrementAndGet();
+            return false;
+        }
+        OrderBook book = books.get(locator.ticker());
+        if (book == null) {
+            orderLocator.remove(orderId);
+            cancelsMiss.incrementAndGet();
+            return false;
+        }
+        boolean canceled = book.cancel(orderId);
         if (canceled) {
             OrderMeta meta = orderMeta.remove(orderId);
             if (meta != null) {
                 Set<String> set = activeOrdersByTrader.get(meta.traderId());
                 if (set != null) set.remove(orderId);
             }
+            orderLocator.remove(orderId);
+            cancelsOk.incrementAndGet();
+        } else {
+            cancelsMiss.incrementAndGet();
+            orderLocator.remove(orderId);
         }
         return canceled;
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     public int countActiveOrdersForTrader(String traderId) {
+        readLock.lock();
+        try {
         return activeOrdersByTrader.getOrDefault(traderId, Collections.emptySet()).size();
+        } finally {
+            readLock.unlock();
+        }
     }
 
     public int getMarketMakerCount() {
+        readLock.lock();
+        try {
         return marketMakers.size();
+        } finally {
+            readLock.unlock();
+        }
     }
 
     public OrderBookDto getOrderBook(String rawTicker, int levels) {
+        readLock.lock();
+        try {
         String ticker = normalizeTicker(rawTicker);
         OrderBook b = books.get(ticker);
         if (b == null) throw new StockNotFoundException(ticker);
-        List<LevelDto> bidLevels = b.bids().values().stream().limit(levels).map(l -> new LevelDto(priceTicks.toPrice(l.priceTicks()), l.totalQty())).toList();
-        List<LevelDto> askLevels = b.asks().values().stream().limit(levels).map(l -> new LevelDto(priceTicks.toPrice(l.priceTicks()), l.totalQty())).toList();
+        OrderBookSnapshot snapshot = b.snapshot(levels, priceTicks, simulationTime);
+        List<LevelDto> bidLevels = snapshot.bids().stream().map(l -> new LevelDto(l.price(), l.totalQty())).toList();
+        List<LevelDto> askLevels = snapshot.asks().stream().map(l -> new LevelDto(l.price(), l.totalQty())).toList();
         int bidDepth = bidLevels.stream().mapToInt(LevelDto::qty).sum();
         int askDepth = askLevels.stream().mapToInt(LevelDto::qty).sum();
         double imbalance = (bidDepth - askDepth) / (double) (bidDepth + askDepth + 1e-9);
-        Double bestBid = b.bestBidTicks() == null ? null : priceTicks.toPrice(b.bestBidTicks());
-        Double bestAsk = b.bestAskTicks() == null ? null : priceTicks.toPrice(b.bestAskTicks());
+        Double bestBid = bidLevels.isEmpty() ? null : bidLevels.get(0).price();
+        Double bestAsk = askLevels.isEmpty() ? null : askLevels.get(0).price();
         Double spread = (bestBid == null || bestAsk == null) ? null : bestAsk - bestBid;
         return new OrderBookDto(ticker, bestBid, bestAsk, spread, bidLevels, askLevels, imbalance);
+        } finally {
+            readLock.unlock();
+        }
     }
 
     public List<Trade> getTrades(String rawTicker, int limit) {
+        readLock.lock();
+        try {
         String ticker = normalizeTicker(rawTicker);
         Deque<Trade> dq = trades.get(ticker);
         if (dq == null) throw new StockNotFoundException(ticker);
-        return dq.stream().limit(limit).toList();
+        return List.copyOf(dq.stream().limit(limit).toList());
+        } finally {
+            readLock.unlock();
+        }
     }
 
 
@@ -339,6 +503,8 @@ public class MarketSimulationService {
     }
 
     public List<CandleDto> getCandles(String rawTicker, String tf, int limit) {
+        readLock.lock();
+        try {
         String ticker = normalizeTicker(rawTicker);
         int tfSec = parseTimeframe(tf);
         Map<Long, CandleDto.MutableCandle> buckets = new TreeMap<>();
@@ -365,6 +531,9 @@ public class MarketSimulationService {
         CandleDto last = candles.isEmpty() ? null : candles.get(candles.size() - 1);
         log.info("candles ticker={} tf={}({}s) count={} last={}", ticker, tf, tfSec, candles.size(), last);
         return candles;
+        } finally {
+            readLock.unlock();
+        }
     }
 
     private int parseTimeframe(String tf) {
@@ -378,26 +547,43 @@ public class MarketSimulationService {
     }
 
     public PortfolioDto deposit(String traderId, double amount) {
+        writeLock.lock();
+        try {
         Portfolio p = portfolios.computeIfAbsent(traderId, id -> new Portfolio(id, 1_000_000));
         if (amount <= 0) throw new IllegalArgumentException("amount must be > 0");
         p.adjustCash(amount);
         return getPortfolio(traderId);
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     public PortfolioDto withdraw(String traderId, double amount) {
+        writeLock.lock();
+        try {
         Portfolio p = portfolios.computeIfAbsent(traderId, id -> new Portfolio(id, 1_000_000));
         if (amount <= 0) throw new IllegalArgumentException("amount must be > 0");
         p.adjustCash(-amount);
         return getPortfolio(traderId);
+        } finally {
+            writeLock.unlock();
+        }
     }
     public PortfolioDto getPortfolio(String traderId) {
+        readLock.lock();
+        try {
         Portfolio p = portfolios.computeIfAbsent(traderId, id -> new Portfolio(id, 1_000_000));
         double unrealized = p.positions().entrySet().stream().mapToDouble(e -> (getLastPrice(e.getKey()) - e.getValue().avgCost()) * e.getValue().qty()).sum();
         var positions = p.positions().entrySet().stream().map(e -> new PositionDto(e.getKey(), e.getValue().qty(), e.getValue().avgCost())).toList();
         return new PortfolioDto(traderId, p.cash(), p.realizedPnl(), unrealized, positions);
+        } finally {
+            readLock.unlock();
+        }
     }
 
     public MetricsDto getMetrics(String rawTicker) {
+        readLock.lock();
+        try {
         String ticker = normalizeTicker(rawTicker);
         OrderBook b = books.get(ticker);
         if (b == null) throw new StockNotFoundException(ticker);
@@ -417,9 +603,14 @@ public class MarketSimulationService {
         Double mid = (bestBid == null || bestAsk == null) ? null : (bestBid + bestAsk) / 2.0;
         Double spread = (bestBid == null || bestAsk == null) ? null : bestAsk - bestBid;
         return new MetricsDto(ticker, mid, spread, db, da, ofi, nofi, li, rv, vwap);
+        } finally {
+            readLock.unlock();
+        }
     }
 
     public MarketMicroStatsDto getMicroStats() {
+        readLock.lock();
+        try {
         List<MetricsDto> metrics = tickers().stream().map(this::getMetrics).toList();
         double spreadMean = metrics.stream().mapToDouble(m -> m.spread() == null ? 0.0 : m.spread()).average().orElse(0.0);
         double spreadP95 = percentile(metrics.stream().map(m -> m.spread() == null ? 0.0 : m.spread()).toList(), 0.95);
@@ -437,7 +628,10 @@ public class MarketSimulationService {
         double cts = submittedOrders.get() == 0 ? 0.0 : (double) cancelSuccess.get() / submittedOrders.get();
         double ctt = totalTrades.get() == 0 ? 0.0 : (double) cancelSuccess.get() / totalTrades.get();
 
-        return new MarketMicroStatsDto(tickCount.get(), submittedOrders.get(), cancelRequests.get(), cancelSuccess.get(), totalTrades.get(), cts, ctt, spreadMean, spreadP95, avgDepth, tradeSizeMean, tradeSizeP95, acf, ofiRetCorr, volCluster, resting);
+        return new MarketMicroStatsDto(tickCount.get(), submittedOrders.get(), cancelRequests.get(), cancelSuccess.get(), totalTrades.get(), cts, ctt, spreadMean, spreadP95, avgDepth, tradeSizeMean, tradeSizeP95, acf, ofiRetCorr, volCluster, resting, ordersAccepted.get(), ordersRejected.get(), cancelsOk.get(), cancelsMiss.get(), stpSkips.get(), fokRejects.get(), iocRemainderCanceled.get());
+        } finally {
+            readLock.unlock();
+        }
     }
 
     private double percentile(List<Double> xs, double p) {
@@ -506,6 +700,8 @@ public class MarketSimulationService {
     }
 
     public double getLastPrice(String ticker) {
+        readLock.lock();
+        try {
         List<Trade> ts = getTrades(ticker, 1);
         if (!ts.isEmpty()) return ts.get(0).price();
         OrderBook b = books.get(normalizeTicker(ticker));
@@ -513,6 +709,9 @@ public class MarketSimulationService {
         Double bestAsk = b.bestAskTicks() == null ? null : priceTicks.toPrice(b.bestAskTicks());
         if (bestBid != null && bestAsk != null) return (bestBid + bestAsk) / 2.0;
         return bestBid != null ? bestBid : bestAsk != null ? bestAsk : 0.0;
+        } finally {
+            readLock.unlock();
+        }
     }
 
     private void recordTrade(Trade t) {
@@ -535,7 +734,12 @@ public class MarketSimulationService {
     }
 
     public Instant simulationTime() {
+        readLock.lock();
+        try {
         return simulationTime;
+        } finally {
+            readLock.unlock();
+        }
     }
 
     private String normalizeTicker(String t) {
@@ -554,14 +758,19 @@ public class MarketSimulationService {
         }
     }
 
-    public synchronized void setIntervalMillis(long millis) {
+    public void setIntervalMillis(long millis) {
+        writeLock.lock();
+        try {
         if (millis < 20) throw new IllegalArgumentException("millis must be >= 20");
         intervalMillis = millis;
         if (task != null) task.cancel(false);
         task = scheduler.scheduleAtFixedRate(this::tick, intervalMillis, intervalMillis, TimeUnit.MILLISECONDS);
+        } finally {
+            writeLock.unlock();
+        }
     }
 
-    public void pause() { running = false; }
-    public void resume() { running = true; }
-    public MarketStatusDto status() { return new MarketStatusDto(running, intervalMillis, tickCount.get(), simulationTime); }
+    public void pause() { writeLock.lock(); try { running = false; } finally { writeLock.unlock(); } }
+    public void resume() { writeLock.lock(); try { running = true; } finally { writeLock.unlock(); } }
+    public MarketStatusDto status() { readLock.lock(); try { return new MarketStatusDto(running, intervalMillis, tickCount.get(), simulationTime); } finally { readLock.unlock(); } }
 }

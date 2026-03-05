@@ -23,7 +23,7 @@ import java.util.stream.Collectors;
 @Service
 public class MarketSimulationService {
     private static final Logger log = LoggerFactory.getLogger(MarketSimulationService.class);
-    private record OrderMeta(String traderId, String ticker, Side side) {}
+    private record OrderMeta(String traderId, String ticker, Side side, Instant createdAt) {}
 
     private final Map<String, String> catalog = new ConcurrentHashMap<>();
     private final Map<String, OrderBook> books = new ConcurrentHashMap<>();
@@ -254,8 +254,9 @@ public class MarketSimulationService {
         for (Trade t : fills) applyPortfolio(t);
 
         if (order.type() == OrderType.LIMIT && order.tif() == TimeInForce.GTC && order.remainingQty() > 0) {
-            orderMeta.put(order.orderId(), new OrderMeta(order.traderId(), order.ticker(), order.side()));
+            orderMeta.put(order.orderId(), new OrderMeta(order.traderId(), order.ticker(), order.side(), Instant.now()));
             activeOrdersByTrader.computeIfAbsent(order.traderId(), k -> ConcurrentHashMap.newKeySet()).add(order.orderId());
+            enforceMaxActiveForTraderTicker(order.traderId(), order.ticker(), properties.getMaxActiveOrdersPerMmPerTicker());
         }
 
         OrderStatus status = fills.isEmpty() && order.type() == OrderType.MARKET ? OrderStatus.REJECTED : order.remainingQty() == 0 ? OrderStatus.FILLED : fills.isEmpty() ? OrderStatus.NEW : OrderStatus.PARTIALLY_FILLED;
@@ -267,6 +268,22 @@ public class MarketSimulationService {
         Portfolio seller = portfolios.computeIfAbsent(t.sellerTraderId(), id -> new Portfolio(id, 1_000_000));
         buyer.applyBuy(t.ticker(), t.qty(), t.price());
         seller.applySell(t.ticker(), t.qty(), t.price());
+    }
+
+
+    private void enforceMaxActiveForTraderTicker(String traderId, String ticker, int perTickerLimit) {
+        if (!traderId.startsWith("MM_") || perTickerLimit <= 0) return;
+        Set<String> ids = activeOrdersByTrader.getOrDefault(traderId, Collections.emptySet());
+        List<String> sameTicker = ids.stream()
+                .filter(orderMeta::containsKey)
+                .filter(id -> ticker.equals(orderMeta.get(id).ticker()))
+                .sorted(Comparator.comparing(id -> orderMeta.get(id).createdAt()))
+                .toList();
+        int extra = sameTicker.size() - perTickerLimit;
+        for (int i = 0; i < extra; i++) {
+            cancelRequests.incrementAndGet();
+            if (cancelOrder(sameTicker.get(i))) cancelSuccess.incrementAndGet();
+        }
     }
 
     public synchronized boolean cancelOrder(String orderId) {

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import itertools
+import logging
 import math
 import random
 import time
@@ -13,6 +15,8 @@ from typing import Any
 
 from .models import MarketRegime, Order, OrderType, Portfolio, Sentiment, Side
 from .orderbook import LimitOrderBook
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -28,7 +32,9 @@ class RealTimeMarket:
         self.running = False
         self.assets = {"AAPL": 190.0, "BTC": 60000.0, "GOLD": 2350.0, "OIL": 78.0}
         self.books = {s: LimitOrderBook(s) for s in self.assets}
-        self.event_q: asyncio.PriorityQueue[tuple[float, Event]] = asyncio.PriorityQueue()
+        self.event_q: asyncio.PriorityQueue[tuple[float, int, Event]] = asyncio.PriorityQueue()
+        self._seq = itertools.count()
+        self._tasks: list[asyncio.Task] = []
         self.regime = MarketRegime()
         self.sentiment = Sentiment()
         self.player_id = "joueur"
@@ -51,26 +57,54 @@ class RealTimeMarket:
                 self.books[symbol].submit(Order(str(uuid.uuid4()), "seed", symbol, Side.BUY, 80, now, OrderType.LIMIT, round(mid - i * 0.1, 2)))
                 self.books[symbol].submit(Order(str(uuid.uuid4()), "seed", symbol, Side.SELL, 80, now, OrderType.LIMIT, round(mid + i * 0.1, 2)))
 
+    def _log_task_exception(self, task: asyncio.Task) -> None:
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            logger.exception("Task realtime en échec", exc_info=exc)
+
     async def start(self) -> None:
+        if self.running:
+            return
         self.running = True
-        asyncio.create_task(self._event_loop())
-        asyncio.create_task(self._scheduler())
+        self._tasks = [
+            asyncio.create_task(self._event_loop(), name="worldtrader-event-loop"),
+            asyncio.create_task(self._scheduler(), name="worldtrader-scheduler"),
+        ]
+        for task in self._tasks:
+            task.add_done_callback(self._log_task_exception)
+
+    async def stop(self) -> None:
+        self.running = False
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks = []
+
+    async def enqueue_event(self, event: Event) -> None:
+        await self.event_q.put((event.ts, next(self._seq), event))
 
     async def _scheduler(self) -> None:
         while self.running:
             now = time.time()
-            await self.event_q.put((now, Event("agent_decision", {}, now)))
+            await self.enqueue_event(Event("agent_decision", {}, now))
             await asyncio.sleep(1 / self.tps)
 
     async def _event_loop(self) -> None:
         while self.running:
-            _, evt = await self.event_q.get()
-            if evt.kind == "agent_decision":
-                self._step_agents()
-            elif evt.kind == "new_order":
-                self._handle_order(evt.payload["order"])
-            elif evt.kind == "cancel_order":
-                self._cancel(evt.payload["order_id"])
+            try:
+                _, _, evt = await self.event_q.get()
+                if evt.kind == "agent_decision":
+                    self._step_agents()
+                elif evt.kind == "new_order":
+                    self._handle_order(evt.payload["order"])
+                elif evt.kind == "cancel_order":
+                    self.cancel_order(evt.payload["order_id"])
+            except Exception:
+                logger.exception("Erreur de boucle event realtime")
 
     def _step_agents(self) -> None:
         self._drift_regime()
@@ -155,7 +189,7 @@ class RealTimeMarket:
     def _schedule_order(self, order: Order, latency: float) -> None:
         execute_at = time.time() + latency
         self.pending_orders[order.order_id] = order
-        asyncio.create_task(self.event_q.put((execute_at, Event("new_order", {"order": order}, execute_at))))
+        asyncio.create_task(self.enqueue_event(Event("new_order", {"order": order}, execute_at)))
 
     def _handle_order(self, order: Order) -> None:
         self.pending_orders.pop(order.order_id, None)
@@ -181,11 +215,11 @@ class RealTimeMarket:
             if pnl > 1000:
                 self.achievements["profit_1000"] = True
 
-    def _cancel(self, order_id: str) -> bool:
+    def cancel_order(self, order_id: str) -> bool:
         order = self.pending_orders.pop(order_id, None)
         if order:
             return True
-        for book in self.books.values():
+        for book in list(self.books.values()):
             if book.cancel(order_id):
                 return True
         return False
@@ -193,17 +227,17 @@ class RealTimeMarket:
     def _cancel_random(self, symbol: str) -> None:
         for side in ("bids", "asks"):
             levels = getattr(self.books[symbol], side)
-            for lvl in levels.values():
+            for lvl in list(levels.values()):
                 if lvl.orders and self._rng.random() < 0.02:
-                    self._cancel(lvl.orders[0].order_id)
+                    self.cancel_order(lvl.orders[0].order_id)
 
     def _cancel_random_from_agent(self, agent_id: str, symbol: str) -> None:
         book = self.books[symbol]
         for levels in (book.bids, book.asks):
-            for lvl in levels.values():
+            for lvl in list(levels.values()):
                 for o in list(lvl.orders)[:2]:
                     if o.agent_id == agent_id and self._rng.random() < 0.5:
-                        self._cancel(o.order_id)
+                        self.cancel_order(o.order_id)
 
     def _poisson(self, lam: float) -> int:
         l = math.exp(-lam)
@@ -266,9 +300,12 @@ class RealTimeMarket:
 
     def _broadcast_tick(self, trade) -> None:
         payload = {
-            "time": trade.timestamp,
+            "symbol": trade.symbol,
             "asset": trade.symbol,
+            "ts": int(trade.timestamp * 1000),
+            "time": trade.timestamp,
             "price": trade.price,
+            "size": trade.size,
             "volume": trade.size,
         }
         self._log_price(payload)
@@ -299,7 +336,7 @@ class RealTimeMarket:
             w = csv.writer(f)
             if newob:
                 w.writerow(["time", "asset", "best_bid", "best_ask", "spread"])
-            for asset, book in self.books.items():
+            for asset, book in list(self.books.items()):
                 bb = book.best_bid()
                 ba = book.best_ask()
                 w.writerow([tick["time"], asset, bb, ba, (ba - bb) if bb and ba else None])

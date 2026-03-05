@@ -29,7 +29,7 @@ class CancelReq(BaseModel):
 async def lifespan(app: FastAPI):
     await market.start()
     yield
-    market.running = False
+    await market.stop()
 
 
 app = FastAPI(title="WorldTrader Temps Réel", lifespan=lifespan)
@@ -58,7 +58,7 @@ async def ordre(req: OrderReq) -> dict:
 
 @app.post("/annuler")
 async def annuler(req: CancelReq) -> dict:
-    ok = market._cancel(req.order_id)
+    ok = market.cancel_order(req.order_id)
     return {"status": "ok" if ok else "ko", "message": "Ordre annulé" if ok else "Ordre introuvable"}
 
 

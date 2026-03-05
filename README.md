@@ -34,6 +34,19 @@ curl -X POST http://localhost:8000/ordre \
   -d '{"asset":"AAPL","side":"BUY","taille":10,"type_ordre":"LIMIT","prix_limite":189.9}'
 ```
 
+
+### Format JSON WebSocket (`/ws/ticks`)
+Chaque trade diffusé en temps réel envoie:
+```json
+{
+  "symbol": "AAPL",
+  "ts": 1712345678123,
+  "price": 190.25,
+  "size": 12
+}
+```
+(Compatibilité conservée avec les champs `asset`, `time`, `volume`.)
+
 ## Caractéristiques de simulation implémentées
 - CLOB multi-actifs (`AAPL`, `BTC`, `GOLD`, `OIL`).
 - Matching price-time, partial fills, market/limit, cancellations.

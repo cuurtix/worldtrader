@@ -1,3 +1,4 @@
+# worldtrader
 # WorldTrader Backend (Spring Boot)
 
 Backend orienté **microstructure** pour simulation de marché (order book + matching + agents + régime), sans frontend.

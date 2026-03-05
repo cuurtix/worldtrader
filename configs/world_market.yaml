@@ -1,0 +1,127 @@
+{
+  "numeraire": "USD",
+  "initial_cash": 5000000,
+  "base_corr": 0.25,
+  "maintenance_margin": 0.25,
+  "event_intensity": 0.03,
+  "base_spread_bps": 5.0,
+  "impact": {
+    "alpha": 0.62,
+    "beta": 0.38,
+    "temp_scale": 0.015,
+    "perm_scale": 0.004
+  },
+  "venues": [
+    {
+      "name": "XNYS",
+      "timezone": "America/New_York",
+      "maker_fee_bps": -0.05,
+      "taker_fee_bps": 0.25,
+      "latency_ms": 2
+    },
+    {
+      "name": "XLON",
+      "timezone": "Europe/London",
+      "maker_fee_bps": -0.03,
+      "taker_fee_bps": 0.22,
+      "latency_ms": 3
+    },
+    {
+      "name": "CEX",
+      "timezone": "UTC",
+      "maker_fee_bps": -0.01,
+      "taker_fee_bps": 0.35,
+      "latency_ms": 8
+    }
+  ],
+  "instruments": [
+    {
+      "symbol": "SPX_EQ",
+      "asset_class": "equity",
+      "venue": "XNYS",
+      "currency": "USD",
+      "mid": 500.0,
+      "tick_size": 0.01,
+      "lot_size": 1,
+      "volatility_state": 0.012,
+      "liquidity_state": 1.2
+    },
+    {
+      "symbol": "EURUSD",
+      "asset_class": "fx",
+      "venue": "XLON",
+      "currency": "USD",
+      "mid": 1.08,
+      "tick_size": 0.0001,
+      "lot_size": 1000,
+      "volatility_state": 0.006,
+      "liquidity_state": 1.4
+    },
+    {
+      "symbol": "BTCUSD",
+      "asset_class": "crypto",
+      "venue": "CEX",
+      "currency": "USD",
+      "mid": 62000.0,
+      "tick_size": 0.1,
+      "lot_size": 1,
+      "volatility_state": 0.03,
+      "liquidity_state": 0.9
+    },
+    {
+      "symbol": "XAUUSD",
+      "asset_class": "commodity",
+      "venue": "XLON",
+      "currency": "USD",
+      "mid": 2100.0,
+      "tick_size": 0.1,
+      "lot_size": 1,
+      "volatility_state": 0.015,
+      "liquidity_state": 1.0
+    }
+  ],
+  "agents": [
+    {
+      "id": "MM_1",
+      "type": "market_maker",
+      "latency_ms": 1
+    },
+    {
+      "id": "MM_2",
+      "type": "market_maker",
+      "latency_ms": 2
+    },
+    {
+      "id": "CTA_1",
+      "type": "cta",
+      "latency_ms": 5
+    },
+    {
+      "id": "CTA_2",
+      "type": "cta",
+      "latency_ms": 6
+    },
+    {
+      "id": "RET_1",
+      "type": "retail",
+      "latency_ms": 20
+    },
+    {
+      "id": "RET_2",
+      "type": "retail",
+      "latency_ms": 30
+    }
+  ],
+  "network_exposures": {
+    "MM_1": {
+      "CTA_1": 0.05,
+      "RET_1": 0.02
+    },
+    "CTA_1": {
+      "MM_2": 0.04
+    },
+    "CTA_2": {
+      "MM_1": 0.03
+    }
+  }
+}

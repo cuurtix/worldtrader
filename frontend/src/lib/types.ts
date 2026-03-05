@@ -20,3 +20,9 @@ export interface Portfolio {
   unrealizedPnl: number;
   positions: Position[];
 }
+
+export interface Stock {
+  ticker: string;
+  companyName: string;
+  price: number;
+}

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { adjustBalance, fetchPortfolio, fetchTrades, placeOrder, updateRegime } from '../lib/api';
+import { adjustBalance, fetchPortfolio, fetchStocks, fetchTrades, placeOrder, updateRegime } from '../lib/api';
 import { buildCandlesFromTrades } from '../lib/candles';
 import type { Candle, OrderType, Portfolio, Side } from '../lib/types';
 
@@ -12,6 +12,7 @@ interface TradingState {
   candles: Candle[];
   portfolio?: Portfolio;
   watchlist: string[];
+  availableSymbols: string[];
   brackets: Record<string, Bracket>;
   loading: boolean;
   loadData: () => Promise<void>;
@@ -24,15 +25,34 @@ interface TradingState {
 }
 
 export const useTradingStore = create<TradingState>((set, get) => ({
-  symbol: 'AAPL', traderId: 'retail_player', timeframeSec: 60, candles: [], watchlist: ['AAPL', 'MSFT', 'TSLA', 'BTCUSD', 'EURUSD'], loading: false, brackets: {},
+  symbol: 'AAPL', traderId: 'retail_player', timeframeSec: 60, candles: [], watchlist: ['AAPL', 'MSFT', 'TSLA'], availableSymbols: ['AAPL', 'MSFT', 'TSLA'], loading: false, brackets: {},
   async loadData() {
     set({ loading: true });
-    const [trades, portfolio] = await Promise.all([fetchTrades(get().symbol), fetchPortfolio(get().traderId)]);
-    const candles = buildCandlesFromTrades(trades, get().timeframeSec);
-    const last = candles.at(-1)?.close;
-    set((state) => ({ candles, portfolio, loading: false, brackets: { ...state.brackets, [get().symbol]: { ...state.brackets[get().symbol], entry: state.brackets[get().symbol]?.entry ?? last } } }));
+    try {
+      const [stocks, portfolio] = await Promise.all([fetchStocks(), fetchPortfolio(get().traderId)]);
+      const availableSymbols = stocks.map((s) => s.ticker);
+      const nextSymbol = availableSymbols.includes(get().symbol) ? get().symbol : availableSymbols[0] ?? get().symbol;
+      const trades = await fetchTrades(nextSymbol);
+      const candles = buildCandlesFromTrades(trades, get().timeframeSec);
+      const last = candles.at(-1)?.close;
+      set((state) => ({
+        symbol: nextSymbol,
+        candles,
+        portfolio,
+        availableSymbols,
+        watchlist: availableSymbols,
+        loading: false,
+        brackets: { ...state.brackets, [nextSymbol]: { ...state.brackets[nextSymbol], entry: state.brackets[nextSymbol]?.entry ?? last } }
+      }));
+    } catch {
+      set({ loading: false });
+    }
   },
-  setSymbol(symbol) { set({ symbol }); void get().loadData(); },
+  setSymbol(symbol) {
+    if (!get().availableSymbols.includes(symbol)) return;
+    set({ symbol });
+    void get().loadData();
+  },
   async place(side, type, qty, price) { await placeOrder({ traderId: get().traderId, ticker: get().symbol, side, type, qty, price }); await get().loadData(); },
   async cashOp(mode, amount) { const portfolio = await adjustBalance(get().traderId, amount, mode); set({ portfolio }); },
   setTimeframe(sec) { set({ timeframeSec: sec }); void get().loadData(); },

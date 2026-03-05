@@ -1,10 +1,16 @@
-import type { OrderType, Portfolio, Side, Trade } from './types';
+import type { OrderType, Portfolio, Side, Stock, Trade } from './types';
 
 const API = '/api/v1';
 
 export async function fetchTrades(symbol: string, limit = 500): Promise<Trade[]> {
   const r = await fetch(`${API}/trades/${symbol}?limit=${limit}`);
   if (!r.ok) throw new Error('trades fetch failed');
+  return r.json();
+}
+
+export async function fetchStocks(): Promise<Stock[]> {
+  const r = await fetch(`${API}/stocks`);
+  if (!r.ok) throw new Error('stocks fetch failed');
   return r.json();
 }
 

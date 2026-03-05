@@ -1,0 +1,12 @@
+server:
+  port: 8000
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui/index.html
+market:
+  sim:
+    market-makers: 12
+    mm-levels: 5
+    max-active-orders-per-mm-per-ticker: 40

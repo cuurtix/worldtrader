@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
@@ -19,6 +19,8 @@ class OrderReq(BaseModel):
     taille: int
     type_ordre: str = "MARKET"
     prix_limite: float | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
 
 
 class CancelReq(BaseModel):
@@ -50,9 +52,14 @@ async def orderbook(asset: str = "AAPL") -> dict:
     return market.orderbook_state(asset)
 
 
+@app.get("/candles")
+async def candles(asset: str = "AAPL", tf: int = 1, limit: int = 200) -> list[dict]:
+    return market.get_candles(asset, tf, limit)
+
+
 @app.post("/ordre")
 async def ordre(req: OrderReq) -> dict:
-    oid = market.submit_player_order(req.asset, req.side, req.taille, req.type_ordre, req.prix_limite)
+    oid = market.submit_player_order(req.asset, req.side, req.taille, req.type_ordre, req.prix_limite, req.stop_loss, req.take_profit)
     return {"status": "ok", "order_id": oid, "message": "Ordre enregistré"}
 
 

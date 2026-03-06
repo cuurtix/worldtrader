@@ -29,6 +29,33 @@ class RealTimeEngineTest(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_market_cap_updates_with_price(self):
+        market = RealTimeMarket()
+        symbol = "AAPL"
+        st = market.asset_state[symbol]
+        old_shares = st.shares_outstanding
+        market._set_price(symbol, 250.0)
+        self.assertEqual(250.0 * old_shares, market.asset_state[symbol].market_cap)
+
+    def test_split_keeps_market_cap_coherent(self):
+        market = RealTimeMarket()
+        symbol = "AAPL"
+        before = market.asset_state[symbol].market_cap
+        market._apply_split(symbol, 2.0)
+        after = market.asset_state[symbol].market_cap
+        self.assertAlmostEqual(before, after, delta=max(1.0, before * 1e-9))
+
+    def test_candles_are_available_for_multiple_timeframes(self):
+        market = RealTimeMarket()
+        symbol = "AAPL"
+        now = 1000.0
+        market._update_candles(symbol, now, 100.0, 2)
+        market._update_candles(symbol, now + 1, 101.0, 1)
+        market._update_candles(symbol, now + 6, 99.0, 3)
+        c1 = market.get_candles(symbol, tf=1, limit=10)
+        c5 = market.get_candles(symbol, tf=5, limit=10)
+        self.assertTrue(len(c1) >= 2)
+        self.assertTrue(len(c5) >= 2)
 
 if __name__ == "__main__":
     unittest.main()

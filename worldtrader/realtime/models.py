@@ -47,6 +47,15 @@ class Portfolio:
 
 
 @dataclass
+class AssetState:
+    symbol: str
+    last_price: float
+    shares_outstanding: int
+    market_cap: float
+    last_dividend: float = 0.0
+
+
+@dataclass
 class MarketRegime:
     name: str = "moyenne_volatilite"
     sigma: float = 0.004

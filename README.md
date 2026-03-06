@@ -22,6 +22,7 @@ L'interface est entièrement en français :
 ## API temps réel (FastAPI)
 - `GET /marche`
 - `GET /orderbook?asset=AAPL`
+- `GET /candles?asset=AAPL&tf=1&limit=200`
 - `POST /ordre`
 - `POST /annuler`
 - `GET /portefeuille`
@@ -42,7 +43,8 @@ Chaque trade diffusé en temps réel envoie:
   "symbol": "AAPL",
   "ts": 1712345678123,
   "price": 190.25,
-  "size": 12
+  "size": 12,
+  "capitalisation": 2983000000000
 }
 ```
 (Compatibilité conservée avec les champs `asset`, `time`, `volume`.)
@@ -68,3 +70,10 @@ Chaque trade diffusé en temps réel envoie:
 ```bash
 python -m unittest discover -s tests -q
 ```
+
+
+## Cohérence prix/capitalisation
+Le moteur maintient strictement la relation **capitalisation = prix × actions en circulation** pour chaque actif.
+- Chaque trade met à jour instantanément le prix puis la capitalisation.
+- Les splits ajustent simultanément prix et nombre d'actions en circulation.
+- Les dividendes ajustent le prix ex-dividende et recalculent la capitalisation.
